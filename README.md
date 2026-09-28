@@ -3,6 +3,8 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 
+**English** | [فارسی](README_FA.md)
+
 > **Fast, index-free local semantic search & context pruner for AI coding agents (Claude Code, Cursor, Antigravity, Aider).**  
 > Slashes LLM input token consumption by up to **90%** on large codebases.
 
@@ -59,6 +61,33 @@ git clone https://github.com/blackrain02/localgrep.git
 cd localgrep
 pip install -e .
 ```
+
+---
+
+## 🧠 Model Download & Management
+
+`lg` uses the compact `cross-encoder/ms-marco-MiniLM-L-6-v2` model (**~88 MB** in size), which runs CPU-only with sub-second cross-attention inference.
+
+### 1. Automatic Download (Default)
+No manual setup required. On the first run of `lg`, the 88 MB model weights are automatically fetched from HuggingFace and cached permanently in:
+```bash
+~/.cache/huggingface/hub/models--cross-encoder--ms-marco-MiniLM-L-6-v2/
+```
+
+### 2. Pre-download via CLI (Optional)
+If you wish to pre-fetch the weights before first invocation:
+```bash
+python3 -c "from transformers import AutoTokenizer, AutoModelForSequenceClassification; AutoTokenizer.from_pretrained('cross-encoder/ms-marco-MiniLM-L-6-v2'); AutoModelForSequenceClassification.from_pretrained('cross-encoder/ms-marco-MiniLM-L-6-v2')"
+```
+
+### 3. Air-gapped / Offline Environments
+In restricted networks or offline workstations:
+1. Download the model on an internet-connected machine.
+2. Copy the model cache directory:
+   ```bash
+   ~/.cache/huggingface/hub/models--cross-encoder--ms-marco-MiniLM-L-6-v2/
+   ```
+3. Paste it at the same path on the target machine. `lg` will detect and load it offline without making any network requests.
 
 ---
 
