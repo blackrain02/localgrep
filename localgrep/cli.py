@@ -130,6 +130,22 @@ def print_filter_results(query, results):
         line = item["line"]
         print(f"[{score:+.2f}] {line}")
 
+def print_skill_results(query, results):
+    if not results:
+        print(f"No matching skills found for: '{query}'")
+        return
+
+    print(f"\n=== Recommended Skills for: '{query}' ===")
+    for item in results:
+        score = item["score"]
+        name = item["name"]
+        path = item["path"]
+        desc = item["desc"]
+        print(f"\n[Score: {score:+.2f}] {name}")
+        print(f"Path: {path}")
+        if desc:
+            print(f"Description: {desc[:200]}...")
+
 def main():
     if len(sys.argv) < 2:
         print("LocalGrep (lg): Fast index-free local semantic search & context pruner for AI coding agents.\n")
@@ -139,6 +155,7 @@ def main():
         print("  <cmd> | lg '<query>'               # Filter long CLI outputs via pipe")
         print("  lg test '<query>'                  # Search test suite")
         print("  lg error '<error/stacktrace>'      # Trace exception/error to source file")
+        print("  lg skill '<task/intent>'           # Semantic skill recommender for Claude / Antigravity")
         print("  lg mcp                             # Launch Model Context Protocol (MCP) server")
         sys.exit(1)
 
@@ -200,6 +217,15 @@ def main():
             print_search_results(err_msg[:40], resp.get("results", []))
         else:
             print(f"Error search error: {resp.get('message') if resp else 'Daemon error'}")
+
+    elif cmd == "skill":
+        query = sys.argv[2] if len(sys.argv) > 2 else ""
+        payload = {"action": "skill", "query": query, "cwd": cwd, "top_k": 3}
+        resp = send_request(payload)
+        if resp and resp.get("status") == "ok":
+            print_skill_results(query, resp.get("results", []))
+        else:
+            print(f"Skill search error: {resp.get('message') if resp else 'Daemon error'}")
 
     else:
         query = cmd

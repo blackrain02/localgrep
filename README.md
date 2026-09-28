@@ -144,11 +144,19 @@ Trace exceptions and error logs directly to potential throwing locations in your
 lg error "ValidationException: The given data was invalid. price is required"
 ```
 
+### 6. Semantic Skill Recommender (`lg skill`)
+Match any developer task or intention directly to installed Claude Code and Antigravity skills (`.agents/skills/`, `.claude/skills/`):
+```bash
+lg skill "setup 2fa authentication"
+lg skill "slow database query profiling and duplicate N+1 queries"
+lg skill "YAGNI simplify code and remove bloat"
+```
+
 ---
 
 ## 🔌 Model Context Protocol (MCP) Server
 
-`lg` includes a native Model Context Protocol (MCP) server so coding assistants can invoke search and AST pruning natively through tool calls.
+`lg` includes a native Model Context Protocol (MCP) server so coding assistants can invoke search, AST pruning, and skill discovery natively through tool calls.
 
 ### Launching the MCP Server
 ```bash
@@ -172,6 +180,7 @@ lg mcp
 #### Available MCP Tools:
 - **`localgrep_search`**: Fast semantic code search across components and modules.
 - **`localgrep_prune`**: AST-driven context pruner returning exact function/class boundaries.
+- **`localgrep_skill`**: Semantic skill selector matching developer intent to installed skills.
 - **`localgrep_test`**: Pinpoint tests matching features or bugs.
 - **`localgrep_error`**: Trace exceptions/stack traces to root causes in source code.
 
@@ -215,16 +224,21 @@ The daemon starts automatically on first invocation and maintains model sessions
 Add this block to your project's `AGENTS.md`, `CLAUDE.md`, or `.cursorrules`:
 
 ```markdown
-### Code Exploration & Context Pruning
+### Code Exploration & Context Pruning (Priority & Accelerator)
 
-If `lg` is available in PATH, prioritize it to minimize token consumption:
-- `lg "<query>"`: Locate code snippets and entry points across codebase without reading full files.
+> **Safe Host Directive:**
+> 1. `lg` is an optional local CLI accelerator. **Never assume it exists globally and NEVER attempt to install it.**
+> 2. **Priority 1 (When `lg` exists in PATH):** ALWAYS use `lg` first via terminal for code discovery, large file reading, and CLI filtering before reading full files. It reduces token consumption by up to 90%.
+> 3. **English Query Directive:** ALWAYS formulate `lg` queries in **English using Latin characters** (e.g. `lg "payment callback"` NEVER `lg "درگاه پرداخت"`). If the user asks in Persian, translate the conceptual intent into English keywords before invoking `lg`.
+> 4. **Fallback Rule (When `lg` is missing / exit code 127):** Silently and immediately fallback to standard tools (`Semble RAG`, `rg`, `grep`, `view_file`) without raising errors, failing tasks, or prompting the user.
+
+**Commands:**
+- `lg "<query>"`: Locate code snippets and entry points across codebase without reading full files (ALWAYS English).
 - `lg prune <file> "<query>"`: Extract the exact AST function or block from large files (avoids reading whole file into context).
 - `<command> | lg "<query>"`: Filter massive CLI dumps (e.g. `php artisan route:list | lg "comment"`).
 - `lg test "<query>"`: Pinpoint relevant Pest/PHPUnit tests.
 - `lg error "<error>"`: Trace exception/stack trace to probable throwing locations.
-
-Fallback: If `lg` is missing, silently proceed with standard tools.
+- `lg skill "<task/intent>"`: Match any task or prompt to the most relevant installed Claude / Antigravity skill.
 ```
 
 ---

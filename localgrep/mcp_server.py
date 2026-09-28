@@ -114,6 +114,31 @@ def localgrep_error(error_message: str, path: str = ".", top_k: int = 3) -> str:
         out.append(f"\n[Score: {score:+.2f}] {filepath}:{lineno}\n{'-'*50}\n{snippet}\n{'-'*50}")
     return "\n".join(out)
 
+@app.tool()
+def localgrep_skill(intent: str, path: str = ".", top_k: int = 3) -> str:
+    """
+    Semantic Skill Recommender: Match any coding task, user intent, or problem
+    to the most relevant installed Claude / Antigravity skill, returning skill names, paths, and descriptions.
+    """
+    cwd = os.path.abspath(path)
+    payload = {"action": "skill", "query": intent, "cwd": cwd, "top_k": top_k}
+    resp = send_request(payload)
+    if not resp or resp.get("status") != "ok":
+        return f"No skills matched for intent: '{intent}'"
+
+    results = resp.get("results", [])
+    if not results:
+        return f"No skills matched for intent: '{intent}'"
+
+    out = [f"=== Recommended Skills for: '{intent}' ==="]
+    for item in results:
+        score = item["score"]
+        name = item["name"]
+        skill_path = item["path"]
+        desc = item.get("desc", "")
+        out.append(f"\n[Score: {score:+.2f}] {name}\nPath: {skill_path}\nDescription: {desc[:250]}...")
+    return "\n".join(out)
+
 def main():
     app.run("stdio")
 

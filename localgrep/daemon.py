@@ -286,6 +286,75 @@ def handle_error(error_text, cwd, top_k=3):
     res = get_candidates(query, cwd, top_k=top_k)
     return {"status": "ok", "results": res}
 
+def handle_skill(query, cwd, top_k=3):
+    import glob
+    dirs = [
+        os.path.join(cwd, ".agents/skills"),
+        os.path.join(cwd, ".claude/skills"),
+        os.path.expanduser("~/.claude/skills"),
+        os.path.expanduser("~/.gemini/antigravity-cli/builtin/skills"),
+        os.path.expanduser("~/.gemini/config/skills"),
+    ]
+
+    skills = []
+    seen = set()
+    for d in dirs:
+        if os.path.exists(d):
+            for s in glob.glob(os.path.join(d, "*/SKILL.md")):
+                name = os.path.basename(os.path.dirname(s))
+                if name in seen:
+                    continue
+                seen.add(name)
+                try:
+                    with open(s, "r", encoding="utf-8", errors="ignore") as f:
+                        content = f.read()
+                    parts = content.split("---", 2)
+                    yaml_block = parts[1] if len(parts) >= 3 else ""
+                    desc_match = re.search(r'description:\s*(?:>|\|)?\s*[\'\"]?(.*?)[\'\"]?\n(?=[a-zA-Z0-9_-]+:|$)', yaml_block, re.DOTALL)
+                    desc = desc_match.group(1).strip() if desc_match else ""
+                    if not desc:
+                        lines = [l.strip() for l in content.split("\n") if l.strip() and not l.startswith("---") and not l.startswith("#")]
+                    desc = ' '.join(desc.split())
+                    skills.append({
+                        "name": name,
+                        "path": s,
+                        "desc": desc,
+                        "text": f"{name} - {desc}"
+                    })
+                except Exception:
+                    pass
+
+    if not skills:
+        return {"status": "ok", "results": []}
+
+    terms = extract_search_terms(query)
+    pairs = [[query, s["text"]] for s in skills]
+    logits = run_cross_encoder_inference(pairs, max_length=256)
+
+    ranked = []
+    for score, s in zip(logits, skills):
+        boost = 0.0
+        name_lower = s["name"].lower()
+        desc_lower = s["desc"].lower()
+
+        # Name match bonus
+        if any(t in name_lower for t in terms):
+            boost += 3.0
+
+        # Keyword overlap bonus
+        matching_terms = sum(1 for t in terms if t in desc_lower)
+        boost += matching_terms * 0.8
+
+        ranked.append({
+            "score": score + boost,
+            "name": s["name"],
+            "path": s["path"],
+            "desc": s["desc"]
+        })
+
+    ranked.sort(key=lambda x: x["score"], reverse=True)
+    return {"status": "ok", "results": ranked[:top_k]}
+
 def handle_client(conn):
     try:
         chunks = []
@@ -317,6 +386,9 @@ def handle_client(conn):
         elif action == "error":
             error_text = req.get("error", "")
             resp = handle_error(error_text, cwd, top_k=top_k)
+        elif action == "skill":
+            query = req.get("query", "")
+            resp = handle_skill(query, cwd, top_k=top_k)
         else:
             query = req.get("query", "")
             res = get_candidates(query, cwd, top_k=top_k)

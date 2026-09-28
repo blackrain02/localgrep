@@ -149,6 +149,14 @@ lg test "user registration 2fa"
 lg error "ValidationException: The given data was invalid. price is required"
 ```
 
+### ۶. پیشنهاددهنده هوشمند اسکیل‌های کلود و آنتی‌گراویتی (`lg skill`)
+تطبیق هوشمند هر نیاز یا پرامپت با اسکیل‌های نصب‌شده روی سیستم (`.agents/skills/`, `.claude/skills/`):
+```bash
+lg skill "setup 2fa authentication"
+lg skill "slow database query profiling and duplicate N+1 queries"
+lg skill "YAGNI simplify code and remove bloat"
+```
+
 ---
 
 ## 🔌 سرور پروتکل کانتکست مدل (MCP Server)
@@ -175,6 +183,7 @@ lg mcp
 #### ابزارهای در دسترس در MCP:
 - **`localgrep_search`**: جستجوی معنایی پرسرعت در سراسر سورس‌کد و ماژول‌ها.
 - **`localgrep_prune`**: هرس هوشمند کانتکست بر اساس AST زبان‌ها برای خواندن فقط تابع مربوطه.
+- **`localgrep_skill`**: انتخاب هوشمند اسکیل مناسب برای هر تسک برنامه‌نویسی.
 - **`localgrep_test`**: کشف و انتخاب هوشمند تست‌های مربوط به یک باگ یا ویژگی.
 - **`localgrep_error`**: ردیابی ریشه خطاهای رخ‌داده در برنامه و ارجاع به کد مبدا.
 
@@ -218,16 +227,21 @@ lg mcp
 کد زیر را به فایل `AGENTS.md`، `CLAUDE.md` یا `.cursorrules` پروژه خود اضافه کنید:
 
 ```markdown
-### Code Exploration & Context Pruning
+### Code Exploration & Context Pruning (Priority & Accelerator)
 
-If `lg` is available in PATH, prioritize it to minimize token consumption:
-- `lg "<query>"`: Locate code snippets and entry points across codebase without reading full files.
+> **Safe Host Directive:**
+> 1. `lg` is an optional local CLI accelerator. **Never assume it exists globally and NEVER attempt to install it.**
+> 2. **Priority 1 (When `lg` exists in PATH):** ALWAYS use `lg` first via terminal for code discovery, large file reading, and CLI filtering before reading full files. It reduces token consumption by up to 90%.
+> 3. **English Query Directive:** ALWAYS formulate `lg` queries in **English using Latin characters** (e.g. `lg "payment callback"` NEVER `lg "درگاه پرداخت"`). If the user asks in Persian, translate the conceptual intent into English keywords before invoking `lg`.
+> 4. **Fallback Rule (When `lg` is missing / exit code 127):** Silently and immediately fallback to standard tools (`Semble RAG`, `rg`, `grep`, `view_file`) without raising errors, failing tasks, or prompting the user.
+
+**Commands:**
+- `lg "<query>"`: Locate code snippets and entry points across codebase without reading full files (ALWAYS English).
 - `lg prune <file> "<query>"`: Extract the exact AST function or block from large files (avoids reading whole file into context).
 - `<command> | lg "<query>"`: Filter massive CLI dumps (e.g. `php artisan route:list | lg "comment"`).
 - `lg test "<query>"`: Pinpoint relevant Pest/PHPUnit tests.
 - `lg error "<error>"`: Trace exception/stack trace to probable throwing locations.
-
-Fallback: If `lg` is missing, silently proceed with standard tools.
+- `lg skill "<task/intent>"`: Match any task or prompt to the most relevant installed Claude / Antigravity skill.
 ```
 
 ---
