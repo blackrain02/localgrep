@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "localgrep"
+version = "0.1.0"
+description = "Fast, index-free local semantic search & context pruning CLI for AI coding agents."
+readme = "README.md"
+authors = [
+  { name = "Javad", email = "javad@binacity.com" }
+]
+license = { text = "MIT" }
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development",
+    "Topic :: Text Processing :: Indexing"
+]
+keywords = ["code-search", "semantic-search", "ripgrep", "ai-agents", "context-pruning", "llm-tokens"]
+requires-python = ">=3.9"
+dependencies = [
+    "torch>=2.0.0",
+    "transformers>=4.30.0"
+]
+
+[project.scripts]
+lg = "localgrep.cli:main"
+localgrep = "localgrep.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/blackrain02/localgrep"
+Repository = "https://github.com/blackrain02/localgrep"
+Issues = "https://github.com/blackrain02/localgrep/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["localgrep*"]

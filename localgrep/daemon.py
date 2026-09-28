@@ -1,0 +1,358 @@
+#!/usr/bin/env python3
+import sys
+import os
+import signal
+import socket
+import json
+import subprocess
+import re
+import warnings
+
+SOCKET_PATH = "/tmp/localgrep.sock"
+PID_FILE = "/tmp/localgrep.pid"
+MODEL_NAME = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+
+STOP_WORDS = {
+    "where", "what", "which", "when", "how", "who", "whom", "this", "that",
+    "there", "here", "with", "from", "have", "been", "does", "checked",
+    "check", "find", "show", "code", "file", "logic", "implementation",
+    "look", "give", "tell", "name", "component", "active", "page"
+}
+
+tokenizer = None
+model = None
+
+def init_model():
+    global tokenizer, model
+    import torch
+    from transformers import AutoModelForSequenceClassification, AutoTokenizer, logging
+    logging.set_verbosity_error()
+    warnings.filterwarnings("ignore")
+
+    token = os.environ.get("HF_TOKEN")
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, token=token)
+    model = AutoModelForSequenceClassification.from_pretrained(MODEL_NAME, token=token)
+    model.eval()
+
+    # Model warmup
+    dummy = [["test", "test snippet"]]
+    inp = tokenizer(dummy, padding=True, truncation=True, return_tensors='pt', max_length=64)
+    with torch.no_grad():
+        _ = model(**inp)
+
+def extract_search_terms(query):
+    normalized = re.sub(r'([a-z])([A-Z])', r'\1 \2', query)
+    normalized = normalized.replace('-', ' ').replace('_', ' ')
+    tokens = re.findall(r'[a-zA-Z0-9]+', normalized.lower())
+    meaningful = [t for t in tokens if len(t) > 2 and t not in STOP_WORDS]
+    return meaningful if meaningful else [t for t in tokens if len(t) > 1]
+
+def get_candidates(query, cwd, top_k=3, max_candidates=45, search_dirs=None):
+    import torch
+    terms = extract_search_terms(query)
+    if not terms:
+        terms = ["account", "component"]
+
+    candidates = {}
+
+    globs = [
+        "--glob", "!vendor/**",
+        "--glob", "!node_modules/**",
+        "--glob", "!.git/**",
+        "--glob", "!storage/**",
+        "--glob", "!public/**",
+        "--glob", "!dist/**",
+        "--glob", "!graphify-out/**",
+        "--glob", "!resources/views/vendor/**",
+        "--glob", "!*.lock"
+    ]
+    if not search_dirs or "tests" not in search_dirs:
+        globs += ["--glob", "!tests/**"]
+
+    if not search_dirs:
+        target_candidates = ["resources", "app", "routes", "config", "src", "packages", "lib"]
+        target_dirs = [d for d in target_candidates if os.path.isdir(os.path.join(cwd, d))]
+        search_dirs = target_dirs if target_dirs else ["."]
+
+    # 1. Path-based search
+    try:
+        path_pattern = "|".join(terms)
+        res_files = subprocess.run(
+            ["rg", "--files"] + globs + ["-i", "-e", path_pattern] + search_dirs,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        if res_files.stdout:
+            file_lines = [f.strip() for f in res_files.stdout.strip().split("\n") if f.strip()]
+            def path_score(p):
+                p_lower = p.lower()
+                base = os.path.basename(p_lower)
+                base_matches = sum(2 for t in terms if t in base)
+                path_matches = sum(1 for t in terms if t in p_lower)
+                ext_boost = 1 if p.endswith(('.vue', '.ts', '.php', '.js', '.py', '.rs', '.go')) else 0
+                return base_matches + path_matches + ext_boost
+
+            sorted_files = sorted(file_lines, key=path_score, reverse=True)
+            for filepath in sorted_files[:15]:
+                full_path = os.path.join(cwd, filepath)
+                try:
+                    with open(full_path, 'r', encoding='utf-8', errors='ignore') as f:
+                        lines = [f.readline() for _ in range(16)]
+                    snippet = "".join(lines).strip()
+                    if snippet:
+                        score_val = path_score(filepath)
+                        candidates[(filepath, "1")] = {
+                            "filepath": filepath,
+                            "lineno": "1",
+                            "snippet": snippet,
+                            "is_path_match": True,
+                            "path_bonus": 2.5 if score_val >= 3 else 1.0
+                        }
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    # 2. Content-based search with ripgrep
+    try:
+        regex_pattern = "|".join(terms[:4])
+        cmd = [
+            "rg", "-i", "-n", "-C", "3", "--max-count", "3"
+        ] + globs + ["-e", regex_pattern] + search_dirs
+
+        res = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, check=False)
+        blocks = res.stdout.strip().split("\n--\n")
+
+        for block in blocks[:80]:
+            lines = block.strip().split("\n")
+            if not lines:
+                continue
+            first_line = lines[0]
+            parts = first_line.split(":", 2) if ":" in first_line else first_line.split("-", 2)
+            filepath = parts[0].strip() if len(parts) > 0 else ""
+            lineno = parts[1].strip() if len(parts) > 1 else "1"
+            snippet = "\n".join(lines[:7])
+            if filepath and snippet and (filepath, lineno) not in candidates:
+                candidates[(filepath, lineno)] = {
+                    "filepath": filepath,
+                    "lineno": lineno,
+                    "snippet": snippet,
+                    "is_path_match": False,
+                    "path_bonus": 0.0
+                }
+            if len(candidates) >= max_candidates:
+                break
+    except Exception:
+        pass
+
+    cand_list = list(candidates.values())
+    if not cand_list:
+        return []
+
+    # 3. Model scoring
+    pairs = [[query, f"File: {c['filepath']}\n{c['snippet']}"] for c in cand_list]
+    with torch.no_grad():
+        inputs = tokenizer(pairs, padding=True, truncation=True, return_tensors='pt', max_length=384)
+        logits = model(**inputs).logits.view(-1).float().tolist()
+
+    ranked = []
+    for score, cand in zip(logits, cand_list):
+        total_score = score + cand["path_bonus"]
+        content_lower = cand["snippet"].lower()
+        if all(t in content_lower for t in terms):
+            total_score += 1.0
+        ranked.append({
+            "score": total_score,
+            "filepath": cand["filepath"],
+            "lineno": cand["lineno"],
+            "snippet": cand["snippet"]
+        })
+
+    ranked.sort(key=lambda x: x["score"], reverse=True)
+    return ranked[:top_k]
+
+def handle_prune(filepath, query, cwd, top_k=2):
+    import torch
+    full_path = os.path.join(cwd, filepath) if not os.path.isabs(filepath) else filepath
+    if not os.path.exists(full_path):
+        return {"status": "error", "message": f"File not found: {filepath}"}
+
+    try:
+        with open(full_path, "r", encoding="utf-8", errors="ignore") as f:
+            lines = f.readlines()
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+    if not lines:
+        return {"status": "ok", "results": []}
+
+    window_size = 25
+    step_size = 15
+    chunks = []
+
+    if len(lines) <= window_size:
+        chunks.append({
+            "start": 1,
+            "end": len(lines),
+            "text": "".join(lines)
+        })
+    else:
+        for i in range(0, len(lines), step_size):
+            chunk_lines = lines[i:i + window_size]
+            if not chunk_lines:
+                break
+            chunks.append({
+                "start": i + 1,
+                "end": i + len(chunk_lines),
+                "text": "".join(chunk_lines)
+            })
+            if i + window_size >= len(lines):
+                break
+
+    pairs = [[query, c["text"]] for c in chunks]
+    with torch.no_grad():
+        inputs = tokenizer(pairs, padding=True, truncation=True, return_tensors='pt', max_length=512)
+        logits = model(**inputs).logits.view(-1).float().tolist()
+
+    ranked = []
+    for score, c in zip(logits, chunks):
+        ranked.append({
+            "score": score,
+            "filepath": filepath,
+            "start": c["start"],
+            "end": c["end"],
+            "snippet": c["text"].strip()
+        })
+
+    ranked.sort(key=lambda x: x["score"], reverse=True)
+    return {"status": "ok", "results": ranked[:top_k]}
+
+def handle_filter(text, query, top_k=5):
+    import torch
+    raw_lines = [l.strip() for l in text.split("\n") if l.strip()]
+    if not raw_lines:
+        return {"status": "ok", "results": []}
+
+    terms = extract_search_terms(query)
+    candidates = raw_lines
+    if len(raw_lines) > 100 and terms:
+        filtered = [l for l in raw_lines if any(t in l.lower() for t in terms)]
+        if len(filtered) >= top_k:
+            candidates = filtered[:80]
+        else:
+            candidates = raw_lines[:80]
+    elif len(raw_lines) > 80:
+        candidates = raw_lines[:80]
+
+    pairs = [[query, line] for line in candidates]
+    with torch.no_grad():
+        inputs = tokenizer(pairs, padding=True, truncation=True, return_tensors='pt', max_length=256)
+        logits = model(**inputs).logits.view(-1).float().tolist()
+
+    ranked = []
+    for score, line in zip(logits, candidates):
+        ranked.append({
+            "score": score,
+            "line": line
+        })
+
+    ranked.sort(key=lambda x: x["score"], reverse=True)
+    return {"status": "ok", "results": ranked[:top_k]}
+
+def handle_test(query, cwd, top_k=3):
+    test_dirs = [d for d in ["tests", "test", "spec"] if os.path.isdir(os.path.join(cwd, d))]
+    target = test_dirs if test_dirs else ["."]
+    res = get_candidates(query, cwd, top_k=top_k, search_dirs=target)
+    return {"status": "ok", "results": res}
+
+def handle_error(error_text, cwd, top_k=3):
+    clean_error = re.sub(r'#\d+.*', '', error_text)
+    terms = extract_search_terms(clean_error)
+    query = " ".join(terms[:5]) if terms else error_text[:100]
+    res = get_candidates(query, cwd, top_k=top_k)
+    return {"status": "ok", "results": res}
+
+def handle_client(conn):
+    try:
+        chunks = []
+        while True:
+            chunk = conn.recv(16384)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        if not chunks:
+            return
+
+        raw_req = b"".join(chunks).decode('utf-8')
+        req = json.loads(raw_req)
+        action = req.get("action", "search")
+        cwd = req.get("cwd", os.getcwd())
+        top_k = req.get("top_k", 3)
+
+        if action == "prune":
+            filepath = req.get("file", "")
+            query = req.get("query", "")
+            resp = handle_prune(filepath, query, cwd, top_k=top_k)
+        elif action == "filter":
+            text = req.get("text", "")
+            query = req.get("query", "")
+            resp = handle_filter(text, query, top_k=top_k)
+        elif action == "test":
+            query = req.get("query", "")
+            resp = handle_test(query, cwd, top_k=top_k)
+        elif action == "error":
+            error_text = req.get("error", "")
+            resp = handle_error(error_text, cwd, top_k=top_k)
+        else:
+            query = req.get("query", "")
+            res = get_candidates(query, cwd, top_k=top_k)
+            resp = {"status": "ok", "results": res}
+
+        conn.sendall(json.dumps(resp).encode('utf-8'))
+    except Exception as e:
+        err = json.dumps({"status": "error", "message": str(e)})
+        conn.sendall(err.encode('utf-8'))
+    finally:
+        conn.close()
+
+def cleanup(*args):
+    if os.path.exists(SOCKET_PATH):
+        try:
+            os.unlink(SOCKET_PATH)
+        except OSError:
+            pass
+    if os.path.exists(PID_FILE):
+        try:
+            os.unlink(PID_FILE)
+        except OSError:
+            pass
+    sys.exit(0)
+
+def start_daemon_server():
+    signal.signal(signal.SIGTERM, cleanup)
+    signal.signal(signal.SIGINT, cleanup)
+
+    if os.path.exists(SOCKET_PATH):
+        try:
+            os.unlink(SOCKET_PATH)
+        except OSError:
+            pass
+
+    with open(PID_FILE, 'w') as f:
+        f.write(str(os.getpid()))
+
+    init_model()
+
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(SOCKET_PATH)
+    server.listen(10)
+    os.chmod(SOCKET_PATH, 0o777)
+
+    while True:
+        conn, _ = server.accept()
+        handle_client(conn)
+
+if __name__ == "__main__":
+    start_daemon_server()
