@@ -243,7 +243,16 @@ Add this block to your project's `AGENTS.md`, `CLAUDE.md`, or `.cursorrules`:
 
 ---
 
+## 📚 Deep Dives & Guides
+
+- [**LocalGrep vs smgrep & Model Upgrade Analysis**](COMPARISON_AND_UPGRADE.md): In-depth comparison with smgrep, ONNX acceleration benchmarks, and evaluation of whether larger models are necessary.
+- [**Benchmark: LocalGrep (ONNX) vs Ollama (Qwen3-Embedding)**](MODEL_BENCHMARK_OLLAMA_QWEN3.md): Real-world evaluation of 19ms CPU ONNX vs Ollama Qwen3 on live codebases.
+- [**Just-In-Time (JIT) Skill Routing Proposal**](JIT_SKILL_ROUTING_PROPOSAL.md): How dormant skills + `lg skill` / `/s` slash command save up to 115,000 tokens per 20-turn session.
+
+---
+
 ## 📄 License
 
 MIT © [Javad (blackrain02)](https://github.com/blackrain02)
+
 

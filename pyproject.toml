@@ -8,7 +8,7 @@ version = "0.3.0"
 description = "Fast, index-free local semantic search, AST context pruning, skill recommender & MCP server for AI coding agents."
 readme = "README.md"
 authors = [
-  { name = "Javad", email = "javad@binacity.com" }
+  { name = "Javad", email = "javad@users.noreply.github.com" }
 ]
 license = { text = "MIT" }
 classifiers = [
