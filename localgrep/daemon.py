@@ -11,6 +11,7 @@ import warnings
 SOCKET_PATH = "/tmp/localgrep.sock"
 PID_FILE = "/tmp/localgrep.pid"
 MODEL_NAME = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+DEFAULT_ONNX_PATH = os.path.expanduser("~/.local/localgrep/model.onnx")
 
 STOP_WORDS = {
     "where", "what", "which", "when", "how", "who", "whom", "this", "that",
@@ -20,25 +21,55 @@ STOP_WORDS = {
 }
 
 tokenizer = None
-model = None
+onnx_session = None
+torch_model = None
 
 def init_model():
-    global tokenizer, model
-    import torch
-    from transformers import AutoModelForSequenceClassification, AutoTokenizer, logging
+    global tokenizer, onnx_session, torch_model
+    from transformers import AutoTokenizer, logging
     logging.set_verbosity_error()
     warnings.filterwarnings("ignore")
 
     token = os.environ.get("HF_TOKEN")
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, token=token)
-    model = AutoModelForSequenceClassification.from_pretrained(MODEL_NAME, token=token)
-    model.eval()
 
-    # Model warmup
-    dummy = [["test", "test snippet"]]
-    inp = tokenizer(dummy, padding=True, truncation=True, return_tensors='pt', max_length=64)
+    # Check if ONNX model is available for ultra-fast (sub-millisecond) inference
+    pkg_onnx = os.path.join(os.path.dirname(__file__), "model.onnx")
+    onnx_file = pkg_onnx if os.path.exists(pkg_onnx) else (DEFAULT_ONNX_PATH if os.path.exists(DEFAULT_ONNX_PATH) else None)
+
+    if onnx_file:
+        try:
+            import onnxruntime as ort
+            sess_opts = ort.SessionOptions()
+            sess_opts.intra_op_num_threads = 4
+            onnx_session = ort.InferenceSession(onnx_file, sess_opts, providers=['CPUExecutionProvider'])
+            # Warmup
+            dummy = tokenizer([["warmup", "test"]], padding=True, truncation=True, return_tensors='np')
+            _ = onnx_session.run(["logits"], {"input_ids": dummy["input_ids"], "attention_mask": dummy["attention_mask"]})
+            return
+        except Exception:
+            onnx_session = None
+
+    # Fallback to PyTorch
+    import torch
+    from transformers import AutoModelForSequenceClassification
+    torch_model = AutoModelForSequenceClassification.from_pretrained(MODEL_NAME, token=token)
+    torch_model.eval()
+    dummy = tokenizer([["warmup", "test"]], padding=True, truncation=True, return_tensors='pt')
     with torch.no_grad():
-        _ = model(**inp)
+        _ = torch_model(**dummy)
+
+def run_cross_encoder_inference(pairs, max_length=384):
+    if onnx_session is not None:
+        inputs = tokenizer(pairs, padding=True, truncation=True, return_tensors='np', max_length=max_length)
+        raw = onnx_session.run(["logits"], {"input_ids": inputs["input_ids"], "attention_mask": inputs["attention_mask"]})[0]
+        return raw.flatten().tolist()
+
+    import torch
+    inputs = tokenizer(pairs, padding=True, truncation=True, return_tensors='pt', max_length=max_length)
+    with torch.no_grad():
+        logits = torch_model(**inputs).logits.view(-1).float().tolist()
+    return logits
 
 def extract_search_terms(query):
     normalized = re.sub(r'([a-z])([A-Z])', r'\1 \2', query)
@@ -48,7 +79,6 @@ def extract_search_terms(query):
     return meaningful if meaningful else [t for t in tokens if len(t) > 1]
 
 def get_candidates(query, cwd, top_k=3, max_candidates=45, search_dirs=None):
-    import torch
     terms = extract_search_terms(query)
     if not terms:
         terms = ["account", "component"]
@@ -151,11 +181,9 @@ def get_candidates(query, cwd, top_k=3, max_candidates=45, search_dirs=None):
     if not cand_list:
         return []
 
-    # 3. Model scoring
+    # 3. Model scoring via ONNX / PyTorch
     pairs = [[query, f"File: {c['filepath']}\n{c['snippet']}"] for c in cand_list]
-    with torch.no_grad():
-        inputs = tokenizer(pairs, padding=True, truncation=True, return_tensors='pt', max_length=384)
-        logits = model(**inputs).logits.view(-1).float().tolist()
+    logits = run_cross_encoder_inference(pairs, max_length=384)
 
     ranked = []
     for score, cand in zip(logits, cand_list):
@@ -174,7 +202,13 @@ def get_candidates(query, cwd, top_k=3, max_candidates=45, search_dirs=None):
     return ranked[:top_k]
 
 def handle_prune(filepath, query, cwd, top_k=2):
-    import torch
+    try:
+        from localgrep.chunker import chunk_file
+    except ImportError:
+        try:
+            from .chunker import chunk_file
+        except ImportError:
+            from chunker import chunk_file
     full_path = os.path.join(cwd, filepath) if not os.path.isabs(filepath) else filepath
     if not os.path.exists(full_path):
         return {"status": "error", "message": f"File not found: {filepath}"}
@@ -188,33 +222,13 @@ def handle_prune(filepath, query, cwd, top_k=2):
     if not lines:
         return {"status": "ok", "results": []}
 
-    window_size = 25
-    step_size = 15
-    chunks = []
-
-    if len(lines) <= window_size:
-        chunks.append({
-            "start": 1,
-            "end": len(lines),
-            "text": "".join(lines)
-        })
-    else:
-        for i in range(0, len(lines), step_size):
-            chunk_lines = lines[i:i + window_size]
-            if not chunk_lines:
-                break
-            chunks.append({
-                "start": i + 1,
-                "end": i + len(chunk_lines),
-                "text": "".join(chunk_lines)
-            })
-            if i + window_size >= len(lines):
-                break
+    # AST-aware or sliding-window chunking
+    chunks = chunk_file(filepath, lines)
+    if not chunks:
+        return {"status": "ok", "results": []}
 
     pairs = [[query, c["text"]] for c in chunks]
-    with torch.no_grad():
-        inputs = tokenizer(pairs, padding=True, truncation=True, return_tensors='pt', max_length=512)
-        logits = model(**inputs).logits.view(-1).float().tolist()
+    logits = run_cross_encoder_inference(pairs, max_length=512)
 
     ranked = []
     for score, c in zip(logits, chunks):
@@ -223,14 +237,14 @@ def handle_prune(filepath, query, cwd, top_k=2):
             "filepath": filepath,
             "start": c["start"],
             "end": c["end"],
-            "snippet": c["text"].strip()
+            "snippet": c["text"].strip(),
+            "kind": c.get("kind", "snippet")
         })
 
     ranked.sort(key=lambda x: x["score"], reverse=True)
     return {"status": "ok", "results": ranked[:top_k]}
 
 def handle_filter(text, query, top_k=5):
-    import torch
     raw_lines = [l.strip() for l in text.split("\n") if l.strip()]
     if not raw_lines:
         return {"status": "ok", "results": []}
@@ -247,9 +261,7 @@ def handle_filter(text, query, top_k=5):
         candidates = raw_lines[:80]
 
     pairs = [[query, line] for line in candidates]
-    with torch.no_grad():
-        inputs = tokenizer(pairs, padding=True, truncation=True, return_tensors='pt', max_length=256)
-        logits = model(**inputs).logits.view(-1).float().tolist()
+    logits = run_cross_encoder_inference(pairs, max_length=256)
 
     ranked = []
     for score, line in zip(logits, candidates):

@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "localgrep"
-version = "0.1.0"
-description = "Fast, index-free local semantic search & context pruning CLI for AI coding agents."
+version = "0.2.0"
+description = "Fast, index-free local semantic search, AST context pruning & MCP server for AI coding agents."
 readme = "README.md"
 authors = [
   { name = "Javad", email = "javad@binacity.com" }
@@ -23,12 +23,19 @@ classifiers = [
     "Topic :: Software Development",
     "Topic :: Text Processing :: Indexing"
 ]
-keywords = ["code-search", "semantic-search", "ripgrep", "ai-agents", "context-pruning", "llm-tokens"]
+keywords = ["code-search", "semantic-search", "ripgrep", "ai-agents", "context-pruning", "llm-tokens", "mcp", "tree-sitter", "onnx"]
 requires-python = ">=3.9"
 dependencies = [
-    "torch>=2.0.0",
-    "transformers>=4.30.0"
+    "transformers>=4.30.0",
+    "onnxruntime>=1.16.0",
+    "tree-sitter>=0.21.0,<0.22",
+    "tree-sitter-languages>=1.10.0",
+    "mcp>=2.0.0"
 ]
+
+[project.optional-dependencies]
+torch = ["torch>=2.0.0"]
+all = ["torch>=2.0.0"]
 
 [project.scripts]
 lg = "localgrep.cli:main"

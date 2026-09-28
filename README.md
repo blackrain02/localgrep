@@ -21,8 +21,9 @@ Modern AI coding agents (Claude, Gemini, GPT-4) waste millions of tokens doing b
 
 `lg` is an index-free hybrid retrieval engine designed specifically for developer workstations and AI coding assistants:
 1. **Zero-Index / Branch Agnostic**: Runs directly against working tree files using `ripgrep` for instant candidate retrieval.
-2. **Sub-second Cross-Encoder**: Reranks code candidates using a CPU-friendly cross-attention model (`ms-marco-MiniLM-L-6-v2`) via a persistent Unix socket daemon.
-3. **Context Pruner**: Slices large files into sliding windows and returns only the exact 20-line block needed.
+2. **Sub-millisecond ONNX Cross-Encoder**: Reranks code candidates using a quantized/optimized CPU cross-encoder (`ms-marco-MiniLM-L-6-v2`) via ONNX Runtime (<1ms per pair) with transparent PyTorch fallback.
+3. **Tree-sitter AST-Aware Context Pruner**: Parses functions, methods, classes, and traits directly from the AST in Python, PHP, TypeScript, JavaScript, Go, Rust, and Java — returning clean, complete syntactic blocks instead of arbitrary line slices.
+4. **Native MCP Server**: Exposes semantic search, AST pruning, test finding, and root-cause localization directly to Claude Code, Antigravity, Cursor, and Windsurf as native tools.
 
 ---
 
@@ -30,10 +31,10 @@ Modern AI coding agents (Claude, Gemini, GPT-4) waste millions of tokens doing b
 
 | Task | Naive AI Agent (`view_file`) | Standard `grep` | `lg` (LocalGrep) | Token Savings |
 | :--- | :--- | :--- | :--- | :--- |
-| Inspect method in 1,200-line file | 5,400 tokens | 0 tokens (syntax blind) | **160 tokens** | **~97%** |
+| Inspect method in 1,200-line file | 5,400 tokens | 0 tokens (syntax blind) | **160 tokens (AST block)** | **~97%** |
 | Locate Vue component | 1,800 tokens | 850 tokens (raw matches) | **120 tokens** | **~93%** |
 | Filter CLI route list (400 routes) | 3,200 tokens | 600 tokens | **90 tokens** | **~97%** |
-| Execution Latency | 0.8s - 2.0s (network) | ~10ms | **~350ms (CPU)** | **Sub-second** |
+| Cross-Encoder Scoring (20 pairs) | N/A | N/A | **19ms (ONNX CPU)** | **Sub-millisecond/pair** |
 
 ---
 
@@ -64,30 +65,45 @@ pip install -e .
 
 ---
 
-## 🧠 Model Download & Management
+## 🧠 Model & ONNX Engine
 
-`lg` uses the compact `cross-encoder/ms-marco-MiniLM-L-6-v2` model (**~88 MB** in size), which runs CPU-only with sub-second cross-attention inference.
+`lg` uses the compact `cross-encoder/ms-marco-MiniLM-L-6-v2` model (**~87 MB**). It can run using either **ONNX Runtime** (recommended for sub-millisecond execution) or **PyTorch CPU**.
 
-### 1. Automatic Download (Default)
-No manual setup required. On the first run of `lg`, the 88 MB model weights are automatically fetched from HuggingFace and cached permanently in:
+### 1. Automatic Setup (Default)
+On first run, `lg` automatically fetches tokenizer configurations and weights, storing them in your HuggingFace cache.
+
+### 2. Ultra-Fast ONNX Engine Setup
+To enable sub-millisecond ONNX inference:
 ```bash
-~/.cache/huggingface/hub/models--cross-encoder--ms-marco-MiniLM-L-6-v2/
-```
+# Export the cross-encoder to ONNX
+python3 -c "
+import torch
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
+model_name = 'cross-encoder/ms-marco-MiniLM-L-6-v2'
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+model = AutoModelForSequenceClassification.from_pretrained(model_name)
+model.eval()
 
-### 2. Pre-download via CLI (Optional)
-If you wish to pre-fetch the weights before first invocation:
-```bash
-python3 -c "from transformers import AutoTokenizer, AutoModelForSequenceClassification; AutoTokenizer.from_pretrained('cross-encoder/ms-marco-MiniLM-L-6-v2'); AutoModelForSequenceClassification.from_pretrained('cross-encoder/ms-marco-MiniLM-L-6-v2')"
+dummy = tokenizer([['test query', 'test snippet']], return_tensors='pt')
+torch.onnx.export(
+    model,
+    (dummy['input_ids'], dummy['attention_mask']),
+    '~/.local/localgrep/model.onnx',
+    input_names=['input_ids', 'attention_mask'],
+    output_names=['logits'],
+    dynamic_axes={'input_ids': {0: 'batch', 1: 'seq'}, 'attention_mask': {0: 'batch', 1: 'seq'}, 'logits': {0: 'batch'}},
+    opset_version=14
+)
+print('ONNX model ready at ~/.local/localgrep/model.onnx')
+"
 ```
+When `model.onnx` is present, `lg` automatically detects it and switches from PyTorch to ONNX Runtime, slashing latency to ~0.9ms per pair.
 
 ### 3. Air-gapped / Offline Environments
-In restricted networks or offline workstations:
-1. Download the model on an internet-connected machine.
-2. Copy the model cache directory:
-   ```bash
-   ~/.cache/huggingface/hub/models--cross-encoder--ms-marco-MiniLM-L-6-v2/
-   ```
-3. Paste it at the same path on the target machine. `lg` will detect and load it offline without making any network requests.
+In offline environments:
+1. Copy `model.onnx` to `~/.local/localgrep/model.onnx`.
+2. Copy `~/.cache/huggingface/hub/models--cross-encoder--ms-marco-MiniLM-L-6-v2/` to the target machine.
+`lg` will operate completely offline with zero outbound network calls.
 
 ---
 
@@ -100,10 +116,11 @@ lg "payment callback gateway"
 lg "user profile header dropdown"
 ```
 
-### 2. Context Pruning (`lg prune`)
-Extract the exact 20-30 line code block from a large file without dumping the entire file into context:
+### 2. Tree-sitter AST Context Pruning (`lg prune`)
+Extract the exact syntactic method, function, or class boundary from a large file without dumping the entire file into context:
 ```bash
 lg prune resources/config/AdminMenus.ts "accounting inventory"
+lg prune app/Models/User.php "avatar"
 lg prune app/Services/PaymentService.php "verify callback"
 ```
 
@@ -129,33 +146,67 @@ lg error "ValidationException: The given data was invalid. price is required"
 
 ---
 
+## 🔌 Model Context Protocol (MCP) Server
+
+`lg` includes a native Model Context Protocol (MCP) server so coding assistants can invoke search and AST pruning natively through tool calls.
+
+### Launching the MCP Server
+```bash
+lg mcp
+```
+
+### Configuring MCP Clients
+
+#### For Antigravity / Claude Code / Cursor / Windsurf (`.mcp.json`):
+```json
+{
+  "mcpServers": {
+    "localgrep": {
+      "command": "lg",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+#### Available MCP Tools:
+- **`localgrep_search`**: Fast semantic code search across components and modules.
+- **`localgrep_prune`**: AST-driven context pruner returning exact function/class boundaries.
+- **`localgrep_test`**: Pinpoint tests matching features or bugs.
+- **`localgrep_error`**: Trace exceptions/stack traces to root causes in source code.
+
+---
+
 ## 🛠️ Architecture
 
 ```
 ┌────────────────────────────────────────────────────────┐
 │                   AI Coding Assistant                  │
 │       (Claude Code / Cursor / Antigravity / Aider)     │
-└───────────────────────────┬────────────────────────────┘
-                            │ CLI Invocation (`lg`)
-                            ▼
-               ┌─────────────────────────┐
-               │    LocalGrep Client     │ (Fast Python stdlib, <15ms)
-               └────────────┬────────────┘
+└──────────────┬──────────────────────────┬──────────────┘
+               │ CLI (`lg`)               │ MCP (stdio)
+               ▼                          ▼
+┌─────────────────────────┐    ┌─────────────────────────┐
+│    LocalGrep Client     │    │   LocalGrep MCP Server  │
+└──────────────┬──────────┘    └──────────┬──────────────┘
+               │                          │
+               └────────────┬─────────────┘
                             │ Unix Domain Socket (/tmp/localgrep.sock)
                             ▼
                ┌─────────────────────────┐
-               │    LocalGrep Daemon     │ (Resident in RAM)
+               │    LocalGrep Daemon     │ (Persistent resident process)
                └──────┬───────────┬──────┘
                       │           │
-       Path & Regex   │           │ Cross-Encoder Scoring
-       Candidate Scan │           │ (ms-marco-MiniLM-L-6-v2)
-                      ▼           ▼
-               ┌──────────┐   ┌───────────────┐
-               │ Ripgrep  │   │ PyTorch (CPU) │
-               └──────────┘   └───────────────┘
+       Path & Regex   │           ├── Tree-sitter AST Chunker (PHP, Py, JS, TS, Go, Rust)
+       Candidate Scan │           │
+                      │           └── ONNX Runtime Cross-Encoder (<1ms / pair)
+                      ▼
+               ┌──────────┐
+               │ Ripgrep  │
+               └──────────┘
 ```
 
-The daemon starts automatically on first invocation and keeps the model weights in memory. Submissions after warm-up execute in **300ms - 800ms**.
+The daemon starts automatically on first invocation and maintains model sessions in memory. Searches execute in **20ms - 300ms**.
 
 ---
 
@@ -168,7 +219,7 @@ Add this block to your project's `AGENTS.md`, `CLAUDE.md`, or `.cursorrules`:
 
 If `lg` is available in PATH, prioritize it to minimize token consumption:
 - `lg "<query>"`: Locate code snippets and entry points across codebase without reading full files.
-- `lg prune <file> "<query>"`: Extract the exact 20-30 line block from large files (avoids reading whole file into context).
+- `lg prune <file> "<query>"`: Extract the exact AST function or block from large files (avoids reading whole file into context).
 - `<command> | lg "<query>"`: Filter massive CLI dumps (e.g. `php artisan route:list | lg "comment"`).
 - `lg test "<query>"`: Pinpoint relevant Pest/PHPUnit tests.
 - `lg error "<error>"`: Trace exception/stack trace to probable throwing locations.
@@ -181,3 +232,4 @@ Fallback: If `lg` is missing, silently proceed with standard tools.
 ## 📄 License
 
 MIT © [Javad (blackrain02)](https://github.com/blackrain02)
+

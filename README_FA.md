@@ -21,8 +21,9 @@
 
 ابزار `lg` یک موتور سبک و ترکیبی است که بدون نیاز به ساخت فایل ایندکس روی سیستم کار می‌کند:
 1. **بدون ایندکس و مستقل از شاخه (Zero-Index)**: مستقیماً با هسته پرسرعت `ripgrep` کاندیداها را در کسری از ثانیه پیدا می‌کند.
-2. **رتبه‌بندی معنایی زیر ثانیه (Cross-Encoder)**: کاندیداها توسط مدل سبک هوش مصنوعی (`ms-marco-MiniLM-L-6-v2`) روی CPU از طریق دیمن مقیم در رم رتبه‌بندی می‌شوند.
-3. **هرس کانتکست (Context Pruner)**: فایل‌های چند هزار خطی را برش داده و دقیقاً همان بلاک ۲۰ سطری مورد نظر را بازمی‌گرداند.
+2. **استنتاج زیر میلی‌ثانیه با موتور ONNX Runtime**: رتبه‌بندی فوق سریع کراس‌انکور با مدل سبک `ms-marco-MiniLM-L-6-v2` روی CPU (زیر ۱ میلی‌ثانیه به ازای هر جفت کد) با قابلیت فال‌بک خودکار به PyTorch.
+3. **هرس هوشمند کانتکست با Tree-sitter AST**: تحلیل ساختار گرامری زبان‌ها (PHP، پایتون، تایپ‌اسکریپت، جاوااسکریپت، گو، راست، جاوا) و استخراج توابع، متدها و کلاس‌های کامل به‌جای برش‌های سطری تصادفی.
+4. **سرور بومی پروتکل کانتکست مدل (Native MCP Server)**: اتصال یکپارچه به دستیارهای مدرن (Claude Code، Cursor، Antigravity، Windsurf) از طریق ابزارهای بومی `lg mcp`.
 
 ---
 
@@ -30,10 +31,10 @@
 
 | وظیفه | روش عادی ایجنت (`view_file`) | ابزار سنتی `grep` | لوکال‌گرپ (`lg`) | میزان صرفه‌جویی توکن |
 | :--- | :--- | :--- | :--- | :--- |
-| بررسی یک متد در فایل ۱۲۰۰ خطی | ۵,۴۰۰ توکن | ۰ توکن (بدون درک لاجیک) | **۱۶۰ توکن** | **~۹۷٪** |
+| بررسی یک متد در فایل ۱۲۰۰ خطی | ۵,۴۰۰ توکن | ۰ توکن (بدون درک لاجیک) | **۱۶۰ توکن (بلاک دقیق AST)** | **~۹۷٪** |
 | مکان‌یابی کامپوننت در فرانت‌اند | ۱,۸۰۰ توکن | ۸۵۰ توکن (خروجی خام) | **۱۲۰ توکن** | **~۹۳٪** |
 | فیلتر خروجی دستور روت‌ها (۴۰۰ روت) | ۳,۲۰۰ توکن | ۶۰۰ توکن | **۹۰ توکن** | **~۹۷٪** |
-| زمان اجرا (Latency) | ۰.۸ تا ۲.۰ ثانیه (شبکه) | ~۱۰ میلی‌ثانیه | **~۳۵۰ میلی‌ثانیه (CPU)** | **زیر ثانیه و آفلاین** |
+| رتبه‌بندی ۲۰ کاندیدا با کراس‌انکور | - | - | **۱۹ میلی‌ثانیه (ONNX CPU)** | **زیر میلی‌ثانیه/جفت** |
 
 ---
 
@@ -67,31 +68,47 @@ pip install -e .
 
 ---
 
-## 🧠 راهنمای دانلود و مدیریت مدل هوش مصنوعی
+## 🧠 موتور ONNX و دانلود مدل
 
-مدل استفاده‌شده `cross-encoder/ms-marco-MiniLM-L-6-v2` است که **تنها ۸۸ مگابایت** حجم دارد و روی CPU با سرعت بسیار بالا استنتاج می‌شود.
+مدل مورد استفاده `cross-encoder/ms-marco-MiniLM-L-6-v2` با حجم **~۸۷ مگابایت** است و می‌تواند با **ONNX Runtime** (پیشنهادی برای سرعت زیر میلی‌ثانیه) یا **PyTorch CPU** اجرا شود.
 
 ### ۱. دانلود خودکار (ساده‌ترین روش)
-نیازی به اقدام دستی نیست؛ با اولین اجرای دستور `lg`، مدل به‌صورت خودکار از HuggingFace دانلود و در مسیر کش استاندارد ذخیره می‌شود:
-```bash
-lg "test query"
-# در اولین اجرا: فایل ۸۸ مگابایتی یکبار دانلود شده و برای همیشه در سیستم ذخیره می‌شود.
-```
+نیازی به اقدام دستی نیست؛ با اولین اجرای دستور `lg`، توکنایزر و تنظیمات از HuggingFace دانلود و در کش سیستم ذخیره می‌شود.
 
-### ۲. پیش‌دانلود مدل از خط فرمان (اختیاری)
-اگر می‌خواهید قبل از شروع کار مدل را دانلود کنید:
+### ۲. فعال‌سازی موتور پرسرعت ONNX (زیر میلی‌ثانیه)
+برای فعال‌سازی استنتاج سریع ONNX کافی است فایل مدل را خروجی بگیرید:
 ```bash
-python3 -c "from transformers import AutoTokenizer, AutoModelForSequenceClassification; AutoTokenizer.from_pretrained('cross-encoder/ms-marco-MiniLM-L-6-v2'); AutoModelForSequenceClassification.from_pretrained('cross-encoder/ms-marco-MiniLM-L-6-v2')"
+python3 -c "
+import torch
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
+model_name = 'cross-encoder/ms-marco-MiniLM-L-6-v2'
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+model = AutoModelForSequenceClassification.from_pretrained(model_name)
+model.eval()
+
+dummy = tokenizer([['test query', 'test snippet']], return_tensors='pt')
+torch.onnx.export(
+    model,
+    (dummy['input_ids'], dummy['attention_mask']),
+    '~/.local/localgrep/model.onnx',
+    input_names=['input_ids', 'attention_mask'],
+    output_names=['logits'],
+    dynamic_axes={'input_ids': {0: 'batch', 1: 'seq'}, 'attention_mask': {0: 'batch', 1: 'seq'}, 'logits': {0: 'batch'}},
+    opset_version=14
+)
+print('ONNX model ready at ~/.local/localgrep/model.onnx')
+"
 ```
+به محض وجود فایل `model.onnx`، لوکال‌گرپ به‌صورت خودکار موتور ONNX را لود کرده و زمان پردازش را به ۰.۹ میلی‌ثانیه کاهش می‌دهد.
 
 ### ۳. نصب آفلاین در سیستم‌های بدون اینترنت (Air-gapped)
-در صورتی که سیستم دسترسی به اینترنت ندارد:
-1. روی یک سیستم متصل به اینترنت، مدل را دانلود کنید.
-2. پوشه مدل را از مسیر زیر کپی کنید:
+در صورتی که سیستم مقصد دسترسی به اینترنت ندارد:
+1. فایل `model.onnx` را در مسیر `~/.local/localgrep/model.onnx` کپی کنید.
+2. پوشه مدل کش هوگینگ‌فیس را منتقل کنید:
    ```bash
    ~/.cache/huggingface/hub/models--cross-encoder--ms-marco-MiniLM-L-6-v2/
    ```
-3. این پوشه را در همان مسیر در سیستم مقصد قرار دهید. `lg` بدون نیاز به اینترنت مستقیماً فایل‌های کش محلی را می‌خواند.
+`lg` بدون ارسال درخواست به اینترنت، کاملاً آفلاین اجرا می‌شود.
 
 ---
 
@@ -104,10 +121,11 @@ lg "payment callback gateway"
 lg "user profile header dropdown"
 ```
 
-### ۲. هرس کانتکست فایل‌های حجیم (`lg prune`)
-استخراج دقیق یک قطعه کد ۲۰ تا ۳۰ خطی از فایل‌های بزرگ بدون باز کردن کل فایل:
+### ۲. هرس هوشمند کانتکست با Tree-sitter AST (`lg prune`)
+استخراج دقیق کل تابع، متد یا کلاس از فایل‌های بزرگ بر اساس ساختار نحوی کد (نه خطوط تصادفی):
 ```bash
 lg prune resources/config/AdminMenus.ts "accounting inventory"
+lg prune app/Models/User.php "avatar"
 lg prune app/Services/PaymentService.php "verify callback"
 ```
 
@@ -133,31 +151,65 @@ lg error "ValidationException: The given data was invalid. price is required"
 
 ---
 
+## 🔌 سرور پروتکل کانتکست مدل (MCP Server)
+
+لوکال‌گرپ دارای یک سرور بومی **Model Context Protocol (MCP)** است که به دستیارهای هوش مصنوعی اجازه می‌دهد مستقیماً از طریق ابزار به این قابلیت‌ها دسترسی داشته باشند.
+
+### اجرای سرور MCP
+```bash
+lg mcp
+```
+
+### تنظیم در کلاینت‌های هوش مصنوعی (`.mcp.json`):
+```json
+{
+  "mcpServers": {
+    "localgrep": {
+      "command": "lg",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+#### ابزارهای در دسترس در MCP:
+- **`localgrep_search`**: جستجوی معنایی پرسرعت در سراسر سورس‌کد و ماژول‌ها.
+- **`localgrep_prune`**: هرس هوشمند کانتکست بر اساس AST زبان‌ها برای خواندن فقط تابع مربوطه.
+- **`localgrep_test`**: کشف و انتخاب هوشمند تست‌های مربوط به یک باگ یا ویژگی.
+- **`localgrep_error`**: ردیابی ریشه خطاهای رخ‌داده در برنامه و ارجاع به کد مبدا.
+
+---
+
 ## 🛠️ ساختار معماری (Architecture)
 
 ```
 ┌────────────────────────────────────────────────────────┐
 │                   AI Coding Assistant                  │
 │       (Claude Code / Cursor / Antigravity / Aider)     │
-└───────────────────────────┬────────────────────────────┘
-                            │ فراخوانی خط فرمان (`lg`)
-                            ▼
-               ┌─────────────────────────┐
-               │    LocalGrep Client     │ (پایتون استاندارد، زمان شروع < ۱۵ میلی‌ثانیه)
-               └────────────┬────────────┘
+└──────────────┬──────────────────────────┬──────────────┘
+               │ خط فرمان (`lg`)          │ پروتکل MCP (stdio)
+               ▼                          ▼
+┌─────────────────────────┐    ┌─────────────────────────┐
+│    LocalGrep Client     │    │   LocalGrep MCP Server  │
+└──────────────┬──────────┘    └──────────┬──────────────┘
+               │                          │
+               └────────────┬─────────────┘
                             │ یونیکس دامین سوکت (/tmp/localgrep.sock)
                             ▼
                ┌─────────────────────────┐
-               │    LocalGrep Daemon     │ (مقیم در رم با مدل آماده)
+               │    LocalGrep Daemon     │ (مقیم در حافظه با مدل آماده)
                └──────┬───────────┬──────┘
                       │           │
-           فیلتر مسیر │           │ رتبه‌بندی کراس‌انکور
-          و ریپ‌گرپ   │           │ (ms-marco-MiniLM-L-6-v2)
-                      ▼           ▼
-               ┌──────────┐   ┌───────────────┐
-               │ Ripgrep  │   │ PyTorch (CPU) │
-               └──────────┘   └───────────────┘
+           فیلتر مسیر │           ├── هرس نحوی AST (PHP, Py, JS, TS, Go, Rust)
+          و ریپ‌گرپ   │           │
+                      │           └── موتور ONNX Runtime (زیر ۱ میلی‌ثانیه/جفت)
+                      ▼
+               ┌──────────┐
+               │ Ripgrep  │
+               └──────────┘
 ```
+
+دیمن با اولین فراخوانی روشن شده و مدل در رم مقیم می‌ماند. اجرای کوئری‌ها پس از گرم‌شدن تنها بین **۲۰ تا ۳۰۰ میلی‌ثانیه** زمان می‌برد.
 
 ---
 
@@ -170,7 +222,7 @@ lg error "ValidationException: The given data was invalid. price is required"
 
 If `lg` is available in PATH, prioritize it to minimize token consumption:
 - `lg "<query>"`: Locate code snippets and entry points across codebase without reading full files.
-- `lg prune <file> "<query>"`: Extract the exact 20-30 line block from large files (avoids reading whole file into context).
+- `lg prune <file> "<query>"`: Extract the exact AST function or block from large files (avoids reading whole file into context).
 - `<command> | lg "<query>"`: Filter massive CLI dumps (e.g. `php artisan route:list | lg "comment"`).
 - `lg test "<query>"`: Pinpoint relevant Pest/PHPUnit tests.
 - `lg error "<error>"`: Trace exception/stack trace to probable throwing locations.
@@ -184,3 +236,4 @@ Fallback: If `lg` is missing, silently proceed with standard tools.
 
 این نرم‌افزار تحت مجوز متن‌باز [MIT](LICENSE) منتشر شده است.
 امتیاز توسعه © ۲۰۲۶ [جواد (blackrain02)](https://github.com/blackrain02).
+

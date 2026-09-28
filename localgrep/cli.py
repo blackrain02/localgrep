@@ -20,12 +20,24 @@ def is_daemon_running():
     except (OSError, ValueError):
         return False
 
+def get_python_exe():
+    venv_python = os.path.expanduser("~/.local/localgrep/venv/bin/python")
+    if os.path.exists(venv_python):
+        return venv_python
+    return sys.executable or "python3"
+
 def start_daemon():
     if not is_daemon_running():
         env = os.environ.copy()
-        # Launch python module
+        python_bin = get_python_exe()
+        daemon_file = os.path.join(os.path.dirname(__file__), "daemon.py")
+        if os.path.exists(daemon_file):
+            cmd = [python_bin, daemon_file]
+        else:
+            cmd = [python_bin, "-m", "localgrep.daemon"]
+
         subprocess.Popen(
-            [sys.executable, "-m", "localgrep.daemon"],
+            cmd,
             env=env,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -123,17 +135,32 @@ def main():
         print("LocalGrep (lg): Fast index-free local semantic search & context pruner for AI coding agents.\n")
         print("Usage:")
         print("  lg '<query>'                       # Semantic codebase search")
-        print("  lg prune <file> '<query>'          # Extract targeted 20-line block from file")
+        print("  lg prune <file> '<query>'          # Extract targeted function / code block from file")
         print("  <cmd> | lg '<query>'               # Filter long CLI outputs via pipe")
         print("  lg test '<query>'                  # Search test suite")
         print("  lg error '<error/stacktrace>'      # Trace exception/error to source file")
+        print("  lg mcp                             # Launch Model Context Protocol (MCP) server")
         sys.exit(1)
 
     cwd = os.getcwd()
     cmd = sys.argv[1]
     has_pipe = not sys.stdin.isatty()
 
-    if cmd == "prune":
+    if cmd == "mcp":
+        venv_python = os.path.expanduser("~/.local/localgrep/venv/bin/python")
+        if os.path.exists(venv_python) and sys.executable != venv_python:
+            os.execv(venv_python, [venv_python] + sys.argv)
+        try:
+            from localgrep.mcp_server import main as run_mcp
+        except ImportError:
+            try:
+                from .mcp_server import main as run_mcp
+            except ImportError:
+                from mcp_server import main as run_mcp
+        run_mcp()
+        return
+
+    elif cmd == "prune":
         if len(sys.argv) < 4:
             print("Usage: lg prune <file> '<query>'")
             sys.exit(1)
@@ -146,8 +173,8 @@ def main():
         else:
             print(f"Error pruning {filepath}: {resp.get('message') if resp else 'Daemon error'}")
 
-    elif cmd == "filter":
-        query = sys.argv[2] if len(sys.argv) > 2 else ""
+    elif has_pipe or cmd == "filter":
+        query = cmd if cmd != "filter" else (sys.argv[2] if len(sys.argv) > 2 else "")
         text = sys.stdin.read()
         payload = {"action": "filter", "text": text, "query": query, "top_k": 5}
         resp = send_request(payload)
@@ -173,16 +200,6 @@ def main():
             print_search_results(err_msg[:40], resp.get("results", []))
         else:
             print(f"Error search error: {resp.get('message') if resp else 'Daemon error'}")
-
-    elif has_pipe:
-        query = cmd
-        text = sys.stdin.read()
-        payload = {"action": "filter", "text": text, "query": query, "top_k": 5}
-        resp = send_request(payload)
-        if resp and resp.get("status") == "ok":
-            print_filter_results(query, resp.get("results", []))
-        else:
-            print(f"Filter error: {resp.get('message') if resp else 'Daemon error'}")
 
     else:
         query = cmd
