@@ -37,7 +37,13 @@ STOP_WORDS = {
     "where", "what", "which", "when", "how", "who", "whom", "this", "that",
     "there", "here", "with", "from", "have", "been", "does", "checked",
     "check", "find", "show", "code", "file", "logic", "implementation",
-    "look", "give", "tell", "name", "component", "active", "page"
+    "look", "give", "tell", "name", "component", "active", "page",
+    "function", "method", "class", "trait", "interface", "variable"
+}
+
+GENERIC_TERMS = {
+    "product", "products", "item", "items", "data", "value", "values",
+    "model", "models", "user", "users"
 }
 
 tokenizer = None
@@ -132,12 +138,12 @@ def init_model():
             "Neither ONNX session could be loaded nor PyTorch was found."
         )
 
-def run_cross_encoder_inference(pairs, max_length=384):
+def run_cross_encoder_inference(pairs, max_length=256):
     global onnx_session, tokenizer, sess_inputs, torch_model
     if not pairs:
         return []
 
-    batch_size = 32
+    batch_size = 16
     all_logits = []
 
     if onnx_session is not None:
@@ -169,12 +175,138 @@ def run_cross_encoder_inference(pairs, max_length=384):
     gc.collect()
     return all_logits
 
+def stem_word(word: str) -> list[str]:
+    w = word.lower()
+    variants = set()
+    if len(w) < 4:
+        return [w]
+
+    bases = [w]
+    if w.startswith("re") and len(w) > 5:
+        bases.append(w[2:])
+    if w.startswith("un") and len(w) > 5:
+        bases.append(w[2:])
+
+    for b in bases:
+        variants.add(b)
+        if b.endswith("ies") and len(b) > 4:
+            variants.add(b[:-3] + "y")
+        elif b.endswith(("ses", "xes", "zes", "ches", "shes")) and len(b) > 4:
+            variants.add(b[:-2])
+        elif b.endswith("s") and not b.endswith(("ss", "has", "us", "is", "as")) and len(b) > 3:
+            variants.add(b[:-1])
+
+        if b.endswith("ing") and len(b) > 5:
+            variants.add(b[:-3])
+            variants.add(b[:-3] + "e")
+        elif b.endswith("ed") and len(b) > 4:
+            variants.add(b[:-2])
+            variants.add(b[:-1])
+
+    if "calc" in w:
+        variants.add("calc")
+        variants.add("recalc")
+
+    return [v for v in variants if len(v) >= 3 and v != w]
+
+PROGRAMMING_SYNONYMS = {
+    # CRUD & Operations
+    "fetch": ["get", "retrieve", "find", "load", "query"],
+    "get": ["fetch", "retrieve", "find", "load", "query"],
+    "find": ["search", "query", "lookup", "locate", "where"],
+    "search": ["find", "filter", "query", "index", "lookup"],
+    "save": ["store", "persist", "insert", "create", "write"],
+    "create": ["make", "build", "store", "save", "generate"],
+    "update": ["edit", "modify", "patch", "sync", "refresh", "save"],
+    "delete": ["remove", "destroy", "drop", "purge", "clear"],
+    "remove": ["delete", "detach", "strip", "clear"],
+
+    # Computational & Processing
+    "calculate": ["recalculate", "compute", "calc", "recalc", "total", "sum"],
+    "recalculate": ["calculate", "recalc", "calc", "compute", "sync", "refresh", "update"],
+    "compute": ["calculate", "evaluate", "process"],
+    "recalculates": ["recalculate", "calculate", "recalc", "compute", "update"],
+    "validate": ["verify", "check", "assert", "sanitize", "rule"],
+    "verify": ["validate", "check", "confirm", "ensure"],
+
+    # Status & States
+    "published": ["publish", "active", "status", "draft", "visible", "online", "enabled"],
+    "publish": ["published", "active", "status", "draft", "visible"],
+    "active": ["enabled", "status", "live", "published", "valid"],
+    "status": ["state", "condition", "published", "active"],
+
+    # Entities & Domain
+    "price": ["pricing", "cost", "amount", "rate", "fee", "sale_price"],
+    "prices": ["price", "pricing", "cost", "amount", "sale_price"],
+    "variation": ["variant", "attribute", "option", "sku", "product"],
+    "variations": ["variation", "variant", "attribute", "option", "sku"],
+    "product": ["item", "catalog", "sku", "goods"],
+    "products": ["product", "item", "catalog"],
+    "cart": ["basket", "checkout", "order", "item"],
+    "order": ["invoice", "checkout", "purchase", "transaction"],
+    "discount": ["coupon", "sale", "voucher", "promo"],
+    "customer": ["user", "client", "buyer", "account"],
+    "user": ["account", "member", "customer", "auth"],
+
+    # Framework & Eloquent & Debugging
+    "bug": ["issue", "fix", "error", "patch", "wherehas", "orwherehas"],
+    "issue": ["bug", "problem", "fix"],
+    "wherehas": ["orwherehas", "relation", "scope", "query"],
+    "orwherehas": ["wherehas", "relation", "scope", "query"],
+    "relation": ["relationship", "belongs", "hasone", "hasmany", "wherehas"],
+    "cache": ["redis", "remember", "store", "memory"],
+    "event": ["listener", "dispatch", "broadcast", "trigger"],
+    "job": ["queue", "worker", "dispatch", "schedule"],
+}
+
 def extract_search_terms(query):
-    normalized = re.sub(r'([a-z])([A-Z])', r'\1 \2', query)
-    normalized = normalized.replace('-', ' ').replace('_', ' ')
-    tokens = re.findall(r'[a-zA-Z0-9]+', normalized.lower())
-    meaningful = [t for t in tokens if len(t) > 2 and t not in STOP_WORDS]
-    return meaningful if meaningful else [t for t in tokens if len(t) > 1]
+    # Extract raw alphanumeric words (preserving compound words like orWhereHas, camelCase, snake_case)
+    raw_tokens = [t.lower() for t in re.findall(r'[a-zA-Z0-9]+', query)]
+    split_query = re.sub(r'([a-z])([A-Z])', r'\1 \2', query).replace('-', ' ').replace('_', ' ')
+    split_tokens = [t.lower() for t in re.findall(r'[a-zA-Z0-9]+', split_query)]
+    combined = []
+    seen = set()
+    for t in raw_tokens + split_tokens:
+        if t not in seen:
+            seen.add(t)
+            combined.append(t)
+    meaningful = [t for t in combined if len(t) > 2 and t not in STOP_WORDS]
+    return meaningful if meaningful else [t for t in combined if len(t) > 1]
+
+def expand_search_terms(terms, max_terms=16):
+    expanded = []
+    seen = set()
+
+    def add(t):
+        tc = t.lower().strip()
+        if len(tc) >= 3 and tc not in seen and tc not in STOP_WORDS:
+            seen.add(tc)
+            expanded.append(tc)
+
+    # 1. Original terms first
+    for t in terms:
+        add(t)
+
+    # 2. Direct taxonomy synonyms (high value)
+    for t in terms:
+        t_low = t.lower()
+        for syn in PROGRAMMING_SYNONYMS.get(t_low, [])[:3]:
+            add(syn)
+
+    # 3. Algorithmic stems
+    for t in terms:
+        for s in stem_word(t):
+            add(s)
+
+    # 4. Synonyms of stems
+    for t in terms:
+        for s in stem_word(t):
+            for syn in PROGRAMMING_SYNONYMS.get(s, [])[:2]:
+                add(syn)
+
+    # Prioritize specific action/keyword terms before generic entity terms
+    expanded.sort(key=lambda t: (t in GENERIC_TERMS, -len(t)))
+    return expanded[:max_terms]
 
 def extract_meaningful_file_snippet(full_path, terms, max_lines=12):
     try:
@@ -204,15 +336,20 @@ def extract_meaningful_file_snippet(full_path, terms, max_lines=12):
     except Exception:
         return "", 1
 
-def get_candidates(query, cwd, top_k=3, max_candidates=45, search_dirs=None):
+def get_candidates(query, cwd, top_k=3, max_candidates=50, search_dirs=None):
     terms = extract_search_terms(query)
     if not terms:
         return []
 
+    expanded = expand_search_terms(terms, max_terms=12)
     candidates = {}
 
+    if not search_dirs:
+        target_candidates = ["resources", "app", "routes", "config", "src", "packages", "lib", "vendor/bina", "Modules"]
+        target_dirs = [d for d in target_candidates if os.path.isdir(os.path.join(cwd, d))]
+        search_dirs = target_dirs if target_dirs else ["."]
+
     globs = [
-        "--glob", "!vendor/**",
         "--glob", "!node_modules/**",
         "--glob", "!.git/**",
         "--glob", "!storage/**",
@@ -220,27 +357,26 @@ def get_candidates(query, cwd, top_k=3, max_candidates=45, search_dirs=None):
         "--glob", "!dist/**",
         "--glob", "!graphify-out/**",
         "--glob", "!resources/views/vendor/**",
+        "--glob", "!**/prompts/**",
         "--glob", "!*.lock"
     ]
+    if "." in search_dirs:
+        globs += ["--glob", "!vendor/**"]
     if not search_dirs or "tests" not in search_dirs:
         globs += ["--glob", "!tests/**"]
 
-    if not search_dirs:
-        target_candidates = ["resources", "app", "routes", "config", "src", "packages", "lib"]
-        target_dirs = [d for d in target_candidates if os.path.isdir(os.path.join(cwd, d))]
-        search_dirs = target_dirs if target_dirs else ["."]
-
     # 1. Content-based search with ripgrep (Primary source of truth)
     try:
-        regex_pattern = "|".join(terms[:4])
+        regex_pattern = "|".join(expanded[:8])
         cmd = [
-            "rg", "-i", "-n", "-C", "3", "--max-count", "3"
+            "rg", "-i", "-n", "-C", "3", "--max-count", "10"
         ] + globs + ["-e", regex_pattern] + search_dirs
 
         res = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, check=False)
-        blocks = res.stdout.strip().split("\n--\n")
+        blocks = res.stdout.strip().split("\n--\n") if res.stdout else []
 
-        for block in blocks[:80]:
+        scored_blocks = []
+        for block in blocks:
             lines = block.strip().split("\n")
             if not lines:
                 continue
@@ -249,6 +385,16 @@ def get_candidates(query, cwd, top_k=3, max_candidates=45, search_dirs=None):
             filepath = parts[0].strip() if len(parts) > 0 else ""
             lineno = parts[1].strip() if len(parts) > 1 else "1"
             snippet = "\n".join(lines[:7])
+
+            text_lower = (filepath + " " + snippet).lower()
+            score = sum(3 for t in terms if t in text_lower) + sum(1 for t in expanded if t in text_lower)
+            if any(filepath.endswith(ext) for ext in (".php", ".ts", ".vue", ".js", ".py")):
+                score += 1
+            scored_blocks.append((score, filepath, lineno, snippet))
+
+        scored_blocks.sort(key=lambda x: x[0], reverse=True)
+
+        for _, filepath, lineno, snippet in scored_blocks:
             if filepath and snippet and (filepath, lineno) not in candidates:
                 candidates[(filepath, lineno)] = {
                     "filepath": filepath,
@@ -294,7 +440,7 @@ def get_candidates(query, cwd, top_k=3, max_candidates=45, search_dirs=None):
                             "filepath": filepath,
                             "lineno": str(best_line),
                             "snippet": snippet,
-                            "path_bonus": 0.5  # modest bonus, avoid dominating real content matches
+                            "path_bonus": 0.5
                         }
                     if len(candidates) >= max_candidates:
                         break
@@ -312,11 +458,13 @@ def get_candidates(query, cwd, top_k=3, max_candidates=45, search_dirs=None):
     ranked = []
     for score, cand in zip(logits, cand_list):
         total_score = score + cand["path_bonus"]
-        content_lower = cand["snippet"].lower()
-        if all(t in content_lower for t in terms):
+        content_lower = (cand["filepath"] + " " + cand["snippet"]).lower()
+        matched_count = sum(1 for t in terms if t in content_lower)
+        total_score += matched_count * 2.5
+        if any(cand["filepath"].endswith(ext) for ext in (".php", ".ts", ".vue", ".js", ".py")):
             total_score += 1.0
         ranked.append({
-            "score": total_score,
+            "score": round(total_score, 3),
             "filepath": cand["filepath"],
             "lineno": cand["lineno"],
             "snippet": cand["snippet"]
