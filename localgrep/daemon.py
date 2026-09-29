@@ -345,7 +345,30 @@ def get_candidates(query, cwd, top_k=3, max_candidates=50, search_dirs=None):
     candidates = {}
 
     if not search_dirs:
-        target_candidates = ["resources", "app", "routes", "config", "src", "packages", "lib", "vendor/bina", "Modules"]
+        target_candidates = ["resources", "app", "routes", "config", "src", "packages", "lib", "Modules"]
+
+        # Dynamic discovery for modular monorepos (e.g. Laravel Modules via config/modules.php)
+        modules_cfg = os.path.join(cwd, "config", "modules.php")
+        if os.path.isfile(modules_cfg):
+            try:
+                with open(modules_cfg, "r", encoding="utf-8", errors="ignore") as f:
+                    cfg_text = f.read()
+                m = re.search(r"['\"]modules['\"]\s*=>\s*base_path\(['\"]([^'\"]+)['\"]\)", cfg_text)
+                if m:
+                    custom_module_path = m.group(1).strip("/\\")
+                    if custom_module_path and custom_module_path not in target_candidates:
+                        target_candidates.append(custom_module_path)
+            except Exception:
+                pass
+
+        # Environment variable override for arbitrary monorepo structures
+        env_extra_dirs = os.environ.get("LOCALGREP_DIRS")
+        if env_extra_dirs:
+            for d in env_extra_dirs.split(","):
+                d_clean = d.strip()
+                if d_clean and d_clean not in target_candidates:
+                    target_candidates.append(d_clean)
+
         target_dirs = [d for d in target_candidates if os.path.isdir(os.path.join(cwd, d))]
         search_dirs = target_dirs if target_dirs else ["."]
 
