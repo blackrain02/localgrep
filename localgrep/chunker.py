@@ -1,4 +1,5 @@
 import os
+import re
 from typing import List, Dict, Any
 
 EXT_TO_LANG = {
@@ -18,20 +19,21 @@ EXT_TO_LANG = {
     ".cpp": "cpp",
     ".hpp": "cpp",
     ".cc": "cpp",
+    ".vue": "vue",
 }
 
 AST_BLOCK_TYPES = {
     # Python
-    "function_definition", "async_function_definition", "class_definition",
+    "function_definition", "async_function_definition", "class_definition", "decorated_definition",
     # JS / TS / PHP
     "function_declaration", "method_declaration", "class_declaration",
-    "interface_declaration", "arrow_function",
+    "interface_declaration", "arrow_function", "enum_declaration",
     # PHP specific
-    "method_declaration", "trait_declaration",
+    "trait_declaration",
     # Go
-    "function_declaration", "method_declaration",
+    "type_declaration",
     # Rust
-    "function_item", "impl_item", "trait_item"
+    "function_item", "impl_item", "trait_item", "struct_item", "enum_item",
 }
 
 _PARSERS = {}
@@ -69,13 +71,85 @@ def chunk_sliding_window(lines: List[str], window_size: int = 25, step_size: int
             break
     return chunks
 
+def chunk_vue_file(lines: List[str]) -> List[Dict[str, Any]]:
+    full_text = "".join(lines)
+    chunks = []
+    parser = get_ast_parser("typescript") or get_ast_parser("javascript")
+
+    # 1. Parse script blocks with TypeScript / JavaScript AST
+    script_pattern = re.compile(r'<script(\s+[^>]*)?>', re.IGNORECASE)
+    for match in script_pattern.finditer(full_text):
+        start_char = match.end()
+        end_match = re.search(r'</script>', full_text[start_char:], re.IGNORECASE)
+        if not end_match:
+            continue
+        end_char = start_char + end_match.start()
+        script_code = full_text[start_char:end_char]
+        start_line = full_text[:start_char].count('\n') + 1
+        script_lines = script_code.splitlines(keepends=True)
+
+        if parser and script_code.strip():
+            try:
+                tree = parser.parse(script_code.encode('utf-8', errors='ignore'))
+                for node in tree.root_node.children:
+                    is_target = node.type in AST_BLOCK_TYPES
+                    # Also include multi-line lexical declarations (e.g. arrow function components / composables)
+                    if node.type == "lexical_declaration" and (node.end_point[0] - node.start_point[0] >= 1):
+                        is_target = True
+
+                    if is_target:
+                        s_row = node.start_point[0]
+                        e_row = node.end_point[0]
+                        c_lines = script_lines[s_row:e_row + 1]
+                        if len(c_lines) > 75:
+                            c_lines = c_lines[:75]
+                            e_row = s_row + 74
+                        chunks.append({
+                            "start": start_line + s_row,
+                            "end": start_line + e_row,
+                            "text": "".join(c_lines),
+                            "kind": f"vue_{node.type}"
+                        })
+            except Exception:
+                pass
+
+    # 2. Parse template block
+    template_match = re.search(r'<template(\s+[^>]*)?>\n?(.*?)</template>', full_text, re.DOTALL | re.IGNORECASE)
+    if template_match:
+        t_start_char = template_match.start(2)
+        t_start_line = full_text[:t_start_char].count('\n') + 1
+        t_content = template_match.group(2)
+        t_lines = t_content.splitlines(keepends=True)
+        if len(t_lines) <= 40:
+            chunks.append({
+                "start": t_start_line,
+                "end": t_start_line + max(1, len(t_lines)) - 1,
+                "text": t_content,
+                "kind": "vue_template"
+            })
+        else:
+            t_windows = chunk_sliding_window(t_lines, window_size=30, step_size=20)
+            for tw in t_windows:
+                tw["start"] += t_start_line - 1
+                tw["end"] += t_start_line - 1
+                tw["kind"] = "vue_template_window"
+                chunks.append(tw)
+
+    if not chunks:
+        return chunk_sliding_window(lines)
+
+    chunks.sort(key=lambda c: (c["start"], -c["end"]))
+    return chunks
+
 def chunk_file(filepath: str, lines: List[str]) -> List[Dict[str, Any]]:
     if not lines:
         return []
 
     ext = os.path.splitext(filepath)[1].lower()
+    if ext == ".vue":
+        return chunk_vue_file(lines)
+
     lang = EXT_TO_LANG.get(ext)
-    
     if not lang:
         return chunk_sliding_window(lines)
 
@@ -90,7 +164,7 @@ def chunk_file(filepath: str, lines: List[str]) -> List[Dict[str, Any]]:
         return chunk_sliding_window(lines)
 
     ast_chunks = []
-    
+
     def visit(node):
         if node.type in AST_BLOCK_TYPES:
             start_row = node.start_point[0]

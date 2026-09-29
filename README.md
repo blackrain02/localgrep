@@ -152,6 +152,13 @@ lg skill "slow database query profiling and duplicate N+1 queries"
 lg skill "YAGNI simplify code and remove bloat"
 ```
 
+### 7. Daemon Lifecycle & Memory Status (`lg status`, `lg stop`)
+Inspect memory RSS, runtime uptime, backend provider, or gracefully terminate the daemon:
+```bash
+lg status
+lg stop
+```
+
 ---
 
 ## 🔌 Model Context Protocol (MCP) Server

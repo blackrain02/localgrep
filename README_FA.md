@@ -157,6 +157,13 @@ lg skill "slow database query profiling and duplicate N+1 queries"
 lg skill "YAGNI simplify code and remove bloat"
 ```
 
+### ۷. وضعیت دیمن و مدیریت حافظه (`lg status`, `lg stop`)
+مشاهده وضعیت پردازش، حافظه مصرفی رم (RSS)، نوع مدل و توقف تمیز سرویس پس‌زمینه:
+```bash
+lg status
+lg stop
+```
+
 ---
 
 ## 🔌 سرور پروتکل کانتکست مدل (MCP Server)

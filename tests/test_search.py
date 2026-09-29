@@ -1,5 +1,6 @@
 import unittest
-from localgrep.daemon import extract_search_terms
+from localgrep.daemon import extract_search_terms, extract_meaningful_file_snippet
+from localgrep.chunker import chunk_file
 
 class TestSearchTerms(unittest.TestCase):
     def test_camel_case_splitting(self):
@@ -19,6 +20,48 @@ class TestSearchTerms(unittest.TestCase):
         self.assertNotIn("where", terms)
         self.assertNotIn("code", terms)
         self.assertIn("payment", terms)
+
+    def test_non_latin_query_returns_empty(self):
+        # Non-Latin queries must return empty terms rather than fabricating default terms
+        terms = extract_search_terms("پرداخت آنلاین سفارش")
+        self.assertEqual(terms, [])
+
+class TestChunker(unittest.TestCase):
+    def test_php_free_function_chunking(self):
+        php_lines = [
+            "<?php\n",
+            "function standalone_helper($arg) {\n",
+            "    return $arg * 2;\n",
+            "}\n",
+            "class Sample {\n",
+            "    public function methodOne() {\n",
+            "        return 1;\n",
+            "    }\n",
+            "}\n"
+        ]
+        chunks = chunk_file("helpers.php", php_lines)
+        kinds = [c["kind"] for c in chunks]
+        self.assertIn("ast_function_definition", kinds)
+        self.assertIn("ast_class_declaration", kinds)
+        self.assertIn("ast_method_declaration", kinds)
+
+    def test_vue_sfc_chunking(self):
+        vue_lines = [
+            "<template>\n",
+            "  <div><h1>{{ title }}</h1></div>\n",
+            "</template>\n",
+            "<script setup lang=\"ts\">\n",
+            "import { ref } from 'vue'\n",
+            "const title = ref('Hello')\n",
+            "function handleClick() {\n",
+            "    console.log('clicked')\n",
+            "}\n",
+            "</script>\n"
+        ]
+        chunks = chunk_file("Component.vue", vue_lines)
+        self.assertTrue(len(chunks) >= 2)
+        kinds = [c["kind"] for c in chunks]
+        self.assertTrue(any("vue_function_declaration" in k or "vue_ast" in k for k in kinds))
 
 if __name__ == "__main__":
     unittest.main()
