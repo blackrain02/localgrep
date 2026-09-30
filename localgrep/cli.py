@@ -451,6 +451,10 @@ def main():
                         print(f"  Controller:  {r['controller']}{action_str}")
                     if r.get("target_file"):
                         print(f"  Target File: {r['target_file']}:{r.get('target_line', 1)}")
+                    if r.get("inertia_file"):
+                        print(f"  Inertia Page: {r['inertia_file']}")
+                    if r.get("blade_view"):
+                        print(f"  Blade View:  {r['blade_view']}")
         else:
             print(f"Route lookup error: {resp.get('message') if resp else 'Daemon error'}")
         return

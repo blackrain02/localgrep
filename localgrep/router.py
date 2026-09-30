@@ -132,9 +132,43 @@ def resolve_controller_action(
                 best_file = cand
                 best_line = line_no
 
+        inertia_comp = None
+        inertia_file = None
+        blade_view = None
+
+        full_best = os.path.join(cwd, best_file)
+        if os.path.isfile(full_best) and best_line > 0:
+            try:
+                with open(full_best, "r", encoding="utf-8", errors="ignore") as f:
+                    all_lines = f.readlines()
+                body_chunk = "".join(all_lines[best_line - 1 : min(len(all_lines), best_line + 60)])
+                m_inert = re.search(r"Inertia::render\s*\(\s*['\"]([a-zA-Z0-9_\-\./]+)['\"]", body_chunk)
+                if m_inert:
+                    inertia_comp = m_inert.group(1)
+                    for ext in [".vue", ".tsx", ".ts", ".jsx", ".js"]:
+                        cand_vue = os.path.join(cwd, "resources", "js", "Pages", f"{inertia_comp}{ext}")
+                        if os.path.isfile(cand_vue):
+                            inertia_file = f"resources/js/Pages/{inertia_comp}{ext}"
+                            break
+                        cand_vue2 = os.path.join(cwd, "resources", "js", f"{inertia_comp}{ext}")
+                        if os.path.isfile(cand_vue2):
+                            inertia_file = f"resources/js/{inertia_comp}{ext}"
+                            break
+                    if not inertia_file:
+                        inertia_file = f"resources/js/Pages/{inertia_comp}.vue"
+                else:
+                    m_view = re.search(r"view\s*\(\s*['\"]([a-zA-Z0-9_\-\.]+)['\"]", body_chunk)
+                    if m_view:
+                        blade_view = m_view.group(1)
+            except Exception:
+                pass
+
         return {
             "target_file": best_file,
-            "target_line": best_line
+            "target_line": best_line,
+            "inertia_component": inertia_comp,
+            "inertia_file": inertia_file,
+            "blade_view": blade_view
         }
     except Exception:
         return {}
@@ -414,10 +448,49 @@ def lookup_route(query: str, cwd: str, top_k: int = 5) -> Dict[str, Any]:
             )
             r["target_file"] = ctrl_info.get("target_file", "")
             r["target_line"] = ctrl_info.get("target_line", 1)
+            if ctrl_info.get("inertia_file"):
+                r["inertia_file"] = ctrl_info["inertia_file"]
+                r["inertia_component"] = ctrl_info.get("inertia_component")
+            if ctrl_info.get("blade_view"):
+                r["blade_view"] = ctrl_info["blade_view"]
             r["score"] = round(score, 1)
             unique_results.append(r)
 
         if len(unique_results) >= top_k:
             break
+
+    # Discover direct Inertia pages matching query
+    pages_dir = os.path.join(cwd, "resources", "js", "Pages")
+    if os.path.isdir(pages_dir) and len(unique_results) < top_k:
+        try:
+            for root, _, files in os.walk(pages_dir):
+                for f in files:
+                    if f.endswith((".vue", ".tsx")):
+                        rel_f = os.path.relpath(os.path.join(root, f), cwd)
+                        f_stem = os.path.splitext(f)[0]
+                        f_norm = f_stem.lower().replace("_", "")
+                        comp_name = os.path.relpath(os.path.join(root, f_stem), pages_dir).replace(os.path.sep, "/")
+                        comp_norm = comp_name.lower().replace("/", "").replace("_", "")
+                        if q_lower == f_norm or q_lower == comp_norm or q_lower in comp_norm:
+                            if not any(ur.get("inertia_file") == rel_f for ur in unique_results):
+                                unique_results.append({
+                                    "method": "PAGE",
+                                    "uri": f"/{comp_name.lower()}",
+                                    "name": f"page.{f_norm}",
+                                    "controller": "InertiaPage",
+                                    "action": "render",
+                                    "route_file": rel_f,
+                                    "route_line": 1,
+                                    "inertia_component": comp_name,
+                                    "inertia_file": rel_f,
+                                    "target_file": rel_f,
+                                    "target_line": 1,
+                                    "is_page": True,
+                                    "score": 35.0
+                                })
+                    if len(unique_results) >= top_k:
+                        break
+        except Exception:
+            pass
 
     return {"status": "ok", "query": query, "results": unique_results}

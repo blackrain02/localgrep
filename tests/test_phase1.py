@@ -146,5 +146,14 @@ export function calculate(a: number, b: number): number {
         self.assertIn("framework", topo)
         self.assertIn("card", topo)
 
+    def test_inertia_page_route_resolution(self):
+        from localgrep.router import lookup_route
+        res = lookup_route("contact", "/home/javad/www/demo")
+        self.assertEqual(res["status"], "ok")
+        self.assertTrue(len(res["results"]) > 0)
+        # Check that contact-us route found and rendered Inertia component
+        found_inertia = any(r.get("inertia_file") for r in res["results"])
+        self.assertTrue(found_inertia)
+
 if __name__ == "__main__":
     unittest.main()
