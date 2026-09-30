@@ -807,6 +807,35 @@ def handle_client(conn):
         elif action == "skill":
             query = req.get("query", "")
             resp = handle_skill(query, cwd, top_k=top_k)
+        elif action == "contract":
+            target = req.get("target", "")
+            try:
+                from localgrep.contract import extract_contract
+            except ImportError:
+                try:
+                    from .contract import extract_contract
+                except ImportError:
+                    from contract import extract_contract
+            resp = extract_contract(target, cwd)
+        elif action == "route":
+            query = req.get("query", "")
+            try:
+                from localgrep.router import lookup_route
+            except ImportError:
+                try:
+                    from .router import lookup_route
+                except ImportError:
+                    from router import lookup_route
+            resp = lookup_route(query, cwd, top_k=top_k)
+        elif action == "topo":
+            try:
+                from localgrep.topo import get_project_topology
+            except ImportError:
+                try:
+                    from .topo import get_project_topology
+                except ImportError:
+                    from topo import get_project_topology
+            resp = get_project_topology(cwd)
         else:
             query = req.get("query", "")
             terms = extract_search_terms(query)

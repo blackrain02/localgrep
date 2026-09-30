@@ -293,6 +293,9 @@ def main():
         print("LocalGrep (lg): Fast index-free local semantic search & context pruner for AI coding agents.\n")
         print("Usage:")
         print("  lg '<query>'                       # Semantic codebase search")
+        print("  lg contract <file|component>       # Extract Vue props/emits, PHP class or TS signatures")
+        print("  lg route '<uri|name|controller>'   # Map route directly to Controller action & file line")
+        print("  lg topo                            # Dense executive project topology card for agent start")
         print("  lg prune <file> '<query>'          # Extract targeted function / code block from file")
         print("  <cmd> | lg '<query>'               # Filter long CLI outputs via pipe")
         print("  lg filter '<query>'                # Filter stdin manually")
@@ -372,6 +375,54 @@ def main():
             print_skill_results(query, resp.get("results", []))
         else:
             print(f"Skill search error: {resp.get('message') if resp else 'Daemon error'}")
+        return
+
+    if cmd == "contract":
+        if len(sys.argv) < 3:
+            print("Usage: lg contract <file_or_component>")
+            sys.exit(1)
+        target = sys.argv[2]
+        payload = {"action": "contract", "target": target, "cwd": cwd}
+        resp = send_request(payload)
+        if resp and resp.get("status") == "ok":
+            print(f"\n=== Public Contract: {resp.get('filepath')} [{resp.get('language')}] ===")
+            print("--------------------------------------------------")
+            print(resp.get("contract", ""))
+            print("--------------------------------------------------")
+        else:
+            print(f"Contract error: {resp.get('message') if resp else 'Daemon error'}")
+        return
+
+    if cmd == "route":
+        query = sys.argv[2] if len(sys.argv) > 2 else ""
+        payload = {"action": "route", "query": query, "cwd": cwd, "top_k": 5}
+        resp = send_request(payload)
+        if resp and resp.get("status") == "ok":
+            results = resp.get("results", [])
+            if not results:
+                print(f"No routes matched: '{query}'")
+            else:
+                print(f"\n=== Route Matches for: '{query}' ===")
+                for r in results:
+                    name_str = f" (name: {r['name']})" if r.get("name") else ""
+                    print(f"\n[{r['method']}] {r['uri']}{name_str}")
+                    print(f"  Route Def:   {r['route_file']}:{r['route_line']}")
+                    if r.get("controller"):
+                        action_str = f"@{r['action']}" if r.get("action") else ""
+                        print(f"  Controller:  {r['controller']}{action_str}")
+                    if r.get("target_file"):
+                        print(f"  Target File: {r['target_file']}:{r.get('target_line', 1)}")
+        else:
+            print(f"Route lookup error: {resp.get('message') if resp else 'Daemon error'}")
+        return
+
+    if cmd == "topo":
+        payload = {"action": "topo", "cwd": cwd}
+        resp = send_request(payload)
+        if resp and resp.get("status") == "ok":
+            print(resp.get("card", ""))
+        else:
+            print(f"Topology error: {resp.get('message') if resp else 'Daemon error'}")
         return
 
     if cmd == "filter":

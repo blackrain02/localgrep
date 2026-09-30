@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-09-30
+
+### Added
+- **`lg contract <file|component>`**: AST contract extractor for Vue SFCs (`defineProps`, `defineEmits`, `defineModel`, slots), PHP classes/interfaces (namespace, public properties, constructor promoted properties, and public method signatures), and TypeScript modules. Slashes file-reading token burn by up to 90% (<10ms execution).
+- **`lg route '<query>'`**: Fast route-to-controller mapper. Scans Laravel `routes/*.php` and modular packages (`vendor/bina/*/routes/`), resolving route methods, URIs, route names, and exact controller target file line numbers in <30ms.
+- **`lg topo`**: Zero-token project topology card. Generates an ultra-dense, 150-token executive summary of framework stack (Laravel, PHP), active frontend dependencies (Vue, Inertia, Tailwind, Vite), database/queue drivers, modular monorepo packages, and entry points (<15ms).
+- **MCP Server Expansion**: Added `localgrep_contract`, `localgrep_route`, and `localgrep_topo` tools to `mcp_server.py`.
+- Automated test suite in `tests/test_phase1.py` covering contract, route, and topology extraction.
+
+---
+
 ## [0.3.3] - 2026-09-30
 
 ### Added

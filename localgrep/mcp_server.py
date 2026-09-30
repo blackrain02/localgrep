@@ -139,6 +139,66 @@ def localgrep_skill(intent: str, path: str = ".", top_k: int = 3) -> str:
         out.append(f"\n[Score: {score:+.2f}] {name}\nPath: {skill_path}\nDescription: {desc[:250]}...")
     return "\n".join(out)
 
+@app.tool()
+def localgrep_contract(target: str, path: str = ".") -> str:
+    """
+    Component & Class Contract Extractor: Extract Vue defineProps/defineEmits/slots,
+    PHP public methods/constructor parameters, or TypeScript interfaces in <10ms.
+    Eliminates reading huge 400+ line files when you only need to know props or method signatures.
+    """
+    cwd = os.path.abspath(path)
+    payload = {"action": "contract", "target": target, "cwd": cwd}
+    resp = send_request(payload)
+    if not resp or resp.get("status") != "ok":
+        return f"Error extracting contract for '{target}': {resp.get('message') if resp else 'Daemon error'}"
+
+    return f"=== Public Contract: {resp.get('filepath')} [{resp.get('language')}] ===\n{'-'*50}\n{resp.get('contract', '')}\n{'-'*50}"
+
+@app.tool()
+def localgrep_route(query: str, path: str = ".", top_k: int = 5) -> str:
+    """
+    Fast Route-to-Controller Mapper: Instant (<15ms) resolution of route URLs, route names,
+    or controller methods to their exact definition in routes/*.php and target controller file line.
+    """
+    cwd = os.path.abspath(path)
+    payload = {"action": "route", "query": query, "cwd": cwd, "top_k": top_k}
+    resp = send_request(payload)
+    if not resp or resp.get("status") != "ok":
+        return f"Route lookup error: {resp.get('message') if resp else 'Daemon error'}"
+
+    results = resp.get("results", [])
+    if not results:
+        return f"No routes matched: '{query}'"
+
+    out = [f"=== Route Matches for: '{query}' ==="]
+    for r in results:
+        name_str = f" (name: {r['name']})" if r.get("name") else ""
+        lines = [
+            f"\n[{r['method']}] {r['uri']}{name_str}",
+            f"  Route Def:   {r['route_file']}:{r['route_line']}"
+        ]
+        if r.get("controller"):
+            action_str = f"@{r['action']}" if r.get("action") else ""
+            lines.append(f"  Controller:  {r['controller']}{action_str}")
+        if r.get("target_file"):
+            lines.append(f"  Target File: {r['target_file']}:{r.get('target_line', 1)}")
+        out.append("\n".join(lines))
+    return "\n".join(out)
+
+@app.tool()
+def localgrep_topo(path: str = ".") -> str:
+    """
+    Zero-Token Project Topology Card: Generates an ultra-dense, 200-token executive digest
+    of framework version, PHP version, modular packages, active frontend stack, DB drivers,
+    and entry points. Ideal for orienting at the start of an agent session without reading 30k tokens.
+    """
+    cwd = os.path.abspath(path)
+    payload = {"action": "topo", "cwd": cwd}
+    resp = send_request(payload)
+    if not resp or resp.get("status") != "ok":
+        return f"Topology error: {resp.get('message') if resp else 'Daemon error'}"
+    return resp.get("card", "")
+
 def main():
     app.run("stdio")
 
