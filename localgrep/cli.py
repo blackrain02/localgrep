@@ -103,7 +103,6 @@ def start_daemon():
 
 def stop_daemon():
     if not is_daemon_running():
-        # Check if stale PID file exists
         if os.path.exists(PID_FILE):
             try:
                 os.unlink(PID_FILE)
@@ -117,7 +116,6 @@ def stop_daemon():
         print("LocalGrep daemon is not running.")
         return True
 
-    # 1. Try graceful stop via socket
     try:
         resp = send_request({"action": "stop"})
         if resp and resp.get("status") == "ok":
@@ -126,7 +124,6 @@ def stop_daemon():
     except Exception:
         pass
 
-    # 2. Fallback to SIGTERM via PID
     try:
         with open(PID_FILE, 'r') as f:
             pid = int(f.read().strip())
@@ -156,10 +153,13 @@ def stop_daemon():
     print("LocalGrep daemon stopped.")
     return True
 
-def get_daemon_status():
+def get_daemon_status(is_json: bool = False):
     running = is_daemon_running()
     if not running:
-        print("LocalGrep daemon: Stopped")
+        if is_json:
+            print(json.dumps({"status": "stopped", "running": False}, indent=2))
+        else:
+            print("LocalGrep daemon: Stopped")
         return
 
     pid = "Unknown"
@@ -173,18 +173,30 @@ def get_daemon_status():
     resp = send_request({"action": "status"})
     rss_mb = "Unknown"
     backend = "Unknown"
-    uptime = "Unknown"
+    uptime = 0
     if resp and resp.get("status") == "ok":
         rss_mb = resp.get("rss_mb", "Unknown")
         backend = resp.get("backend", "Unknown")
-        uptime = f"{resp.get('uptime_seconds', '?')}s"
+        uptime = resp.get("uptime_seconds", 0)
 
-    print("LocalGrep daemon: Running")
-    print(f"  PID:        {pid}")
-    print(f"  Socket:     {SOCKET_PATH}")
-    print(f"  Backend:    {backend}")
-    print(f"  Memory RSS: {rss_mb} MB")
-    print(f"  Uptime:     {uptime}")
+    if is_json:
+        data = {
+            "status": "ok",
+            "running": True,
+            "pid": int(pid) if pid.isdigit() else pid,
+            "socket": SOCKET_PATH,
+            "backend": backend,
+            "rss_mb": rss_mb,
+            "uptime_seconds": uptime
+        }
+        print(json.dumps(data, indent=2))
+    else:
+        print("LocalGrep daemon: Running")
+        print(f"  PID:        {pid}")
+        print(f"  Socket:     {SOCKET_PATH}")
+        print(f"  Backend:    {backend}")
+        print(f"  Memory RSS: {rss_mb} MB")
+        print(f"  Uptime:     {uptime}s")
 
 def send_request(payload):
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -289,26 +301,29 @@ def print_skill_results(query, results):
             print(f"Description: {desc[:200]}...")
 
 def main():
-    if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
+    is_json = "--json" in sys.argv
+    args = [a for a in sys.argv[1:] if a != "--json"]
+
+    if not args or args[0] in ("-h", "--help"):
         print("LocalGrep (lg): Fast index-free local semantic search & context pruner for AI coding agents.\n")
         print("Usage:")
-        print("  lg '<query>'                       # Semantic codebase search")
-        print("  lg contract <file|component>       # Extract Vue props/emits, PHP class or TS signatures")
-        print("  lg route '<uri|name|controller>'   # Map route directly to Controller action & file line")
-        print("  lg topo                            # Dense executive project topology card for agent start")
-        print("  lg prune <file> '<query>'          # Extract targeted function / code block from file")
-        print("  <cmd> | lg '<query>'               # Filter long CLI outputs via pipe")
-        print("  lg filter '<query>'                # Filter stdin manually")
-        print("  lg test '<query>'                  # Search test suite")
-        print("  lg error '<error/stacktrace>'      # Trace exception/error to source file")
-        print("  lg skill '<task/intent>'           # Semantic skill recommender for Claude / Antigravity")
-        print("  lg status                          # Show daemon status, memory RSS, and backend")
-        print("  lg stop                            # Stop background daemon process")
-        print("  lg mcp                             # Launch Model Context Protocol (MCP) server")
-        sys.exit(0 if len(sys.argv) >= 2 else 1)
+        print("  lg '<query>' [--json]                      # Semantic codebase search")
+        print("  lg contract <file|component> [--json]      # Extract Vue props/emits, PHP class or TS signatures")
+        print("  lg route '<uri|name|controller>' [--json]  # Map route directly to Controller action & file line")
+        print("  lg topo [--json]                           # Dense executive project topology card for agent start")
+        print("  lg prune <file> '<query>' [--json]         # Extract targeted function / code block from file")
+        print("  <cmd> | lg '<query>'                       # Filter long CLI outputs via pipe")
+        print("  lg filter '<query>'                        # Filter stdin manually")
+        print("  lg test '<query>' [--json]                 # Search test suite")
+        print("  lg error '<error/stacktrace>' [--json]     # Trace exception/error to source file")
+        print("  lg skill '<task/intent>' [--json]          # Semantic skill recommender for Claude / Antigravity")
+        print("  lg status [--json]                         # Show daemon status, memory RSS, and backend")
+        print("  lg stop                                    # Stop background daemon process")
+        print("  lg mcp                                     # Launch Model Context Protocol (MCP) server")
+        sys.exit(0 if args else 1)
 
     cwd = os.getcwd()
-    cmd = sys.argv[1]
+    cmd = args[0]
 
     # Explicit subcommands first
     if cmd == "stop":
@@ -316,7 +331,7 @@ def main():
         return
 
     if cmd == "status":
-        get_daemon_status()
+        get_daemon_status(is_json=is_json)
         return
 
     if cmd == "mcp":
@@ -334,13 +349,16 @@ def main():
         return
 
     if cmd == "prune":
-        if len(sys.argv) < 4:
-            print("Usage: lg prune <file> '<query>'")
+        if len(args) < 3:
+            print("Usage: lg prune <file> '<query>' [--json]")
             sys.exit(1)
-        filepath = sys.argv[2]
-        query = sys.argv[3]
+        filepath = args[1]
+        query = args[2]
         payload = {"action": "prune", "file": filepath, "query": query, "cwd": cwd, "top_k": 2}
         resp = send_request(payload)
+        if is_json:
+            print(json.dumps(resp or {"status": "error", "message": "Daemon error"}, indent=2))
+            return
         if resp and resp.get("status") == "ok":
             print_prune_results(filepath, query, resp.get("results", []))
         else:
@@ -348,9 +366,12 @@ def main():
         return
 
     if cmd == "test":
-        query = sys.argv[2] if len(sys.argv) > 2 else ""
+        query = args[1] if len(args) > 1 else ""
         payload = {"action": "test", "query": query, "cwd": cwd, "top_k": 3}
         resp = send_request(payload)
+        if is_json:
+            print(json.dumps(resp or {"status": "error", "message": "Daemon error"}, indent=2))
+            return
         if resp and resp.get("status") == "ok":
             print_search_results(query, resp.get("results", []))
         else:
@@ -358,9 +379,12 @@ def main():
         return
 
     if cmd == "error":
-        err_msg = sys.argv[2] if len(sys.argv) > 2 else ""
+        err_msg = args[1] if len(args) > 1 else ""
         payload = {"action": "error", "error": err_msg, "cwd": cwd, "top_k": 3}
         resp = send_request(payload)
+        if is_json:
+            print(json.dumps(resp or {"status": "error", "message": "Daemon error"}, indent=2))
+            return
         if resp and resp.get("status") == "ok":
             print_search_results(err_msg[:40], resp.get("results", []))
         else:
@@ -368,9 +392,12 @@ def main():
         return
 
     if cmd == "skill":
-        query = sys.argv[2] if len(sys.argv) > 2 else ""
+        query = args[1] if len(args) > 1 else ""
         payload = {"action": "skill", "query": query, "cwd": cwd, "top_k": 3}
         resp = send_request(payload)
+        if is_json:
+            print(json.dumps(resp or {"status": "error", "message": "Daemon error"}, indent=2))
+            return
         if resp and resp.get("status") == "ok":
             print_skill_results(query, resp.get("results", []))
         else:
@@ -378,12 +405,15 @@ def main():
         return
 
     if cmd == "contract":
-        if len(sys.argv) < 3:
-            print("Usage: lg contract <file_or_component>")
+        if len(args) < 2:
+            print("Usage: lg contract <file_or_component> [--json]")
             sys.exit(1)
-        target = sys.argv[2]
+        target = args[1]
         payload = {"action": "contract", "target": target, "cwd": cwd}
         resp = send_request(payload)
+        if is_json:
+            print(json.dumps(resp or {"status": "error", "message": "Daemon error"}, indent=2))
+            return
         if resp and resp.get("status") == "ok":
             print(f"\n=== Public Contract: {resp.get('filepath')} [{resp.get('language')}] ===")
             print("--------------------------------------------------")
@@ -394,9 +424,12 @@ def main():
         return
 
     if cmd == "route":
-        query = sys.argv[2] if len(sys.argv) > 2 else ""
+        query = args[1] if len(args) > 1 else ""
         payload = {"action": "route", "query": query, "cwd": cwd, "top_k": 5}
         resp = send_request(payload)
+        if is_json:
+            print(json.dumps(resp or {"status": "error", "message": "Daemon error"}, indent=2))
+            return
         if resp and resp.get("status") == "ok":
             results = resp.get("results", [])
             if not results:
@@ -419,6 +452,9 @@ def main():
     if cmd == "topo":
         payload = {"action": "topo", "cwd": cwd}
         resp = send_request(payload)
+        if is_json:
+            print(json.dumps(resp or {"status": "error", "message": "Daemon error"}, indent=2))
+            return
         if resp and resp.get("status") == "ok":
             print(resp.get("card", ""))
         else:
@@ -426,10 +462,13 @@ def main():
         return
 
     if cmd == "filter":
-        query = sys.argv[2] if len(sys.argv) > 2 else ""
+        query = args[1] if len(args) > 1 else ""
         text = sys.stdin.read()
         payload = {"action": "filter", "text": text, "query": query, "top_k": 5}
         resp = send_request(payload)
+        if is_json:
+            print(json.dumps(resp or {"status": "error", "message": "Daemon error"}, indent=2))
+            return
         if resp and resp.get("status") == "ok":
             print_filter_results(query, resp.get("results", []))
         else:
@@ -442,6 +481,9 @@ def main():
         text = sys.stdin.read()
         payload = {"action": "filter", "text": text, "query": query, "top_k": 5}
         resp = send_request(payload)
+        if is_json:
+            print(json.dumps(resp or {"status": "error", "message": "Daemon error"}, indent=2))
+            return
         if resp and resp.get("status") == "ok":
             print_filter_results(query, resp.get("results", []))
         else:
@@ -452,6 +494,9 @@ def main():
     query = cmd
     payload = {"action": "search", "query": query, "cwd": cwd, "top_k": 3}
     resp = send_request(payload)
+    if is_json:
+        print(json.dumps(resp or {"status": "error", "message": "Daemon error"}, indent=2))
+        return
     if resp and resp.get("status") == "warning":
         print(f"\n[Notice] {resp.get('message')}")
     elif resp and resp.get("status") == "ok":

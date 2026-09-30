@@ -53,24 +53,65 @@ def resolve_target_file(target: str, cwd: str) -> str:
 
     return ""
 
+def extract_balanced(text: str, start_pos: int) -> str:
+    """Extract a balanced parenthesis or bracket expression starting at start_pos."""
+    idx = start_pos
+    while idx < len(text) and text[idx] not in "({[":
+        idx += 1
+    if idx >= len(text):
+        return ""
+
+    stack = [text[idx]]
+    pairs = {"(": ")", "{": "}", "[": "]"}
+    idx += 1
+    in_string = None
+    while idx < len(text) and stack:
+        char = text[idx]
+        if in_string:
+            if char == in_string and (idx == 0 or text[idx - 1] != "\\"):
+                in_string = None
+        else:
+            if char in ("'", '"', "`"):
+                in_string = char
+            elif char in "({[":
+                stack.append(char)
+            elif char in ")}]":
+                if stack and pairs.get(stack[-1]) == char:
+                    stack.pop()
+        idx += 1
+
+    # Include any trailing semicolon or whitespace
+    while idx < len(text) and text[idx] in "; \t":
+        idx += 1
+    return text[start_pos:idx].strip()
+
 def extract_vue_contract(content: str) -> str:
     out = []
     # 1. Script block
     script_m = re.search(r"<script(\s+[^>]*)?>(.*?)</script>", content, re.DOTALL)
     if script_m:
         script = script_m.group(2)
+
+        # Extract interfaces & types related to props/emits/models
+        for match in re.finditer(r"(?:export\s+)?(?:interface|type)\s+([A-Za-z0-9_]+)[^{;]*\{", script):
+            name = match.group(1)
+            is_exported = match.group(0).startswith("export")
+            if is_exported or any(k in name.lower() for k in ("prop", "emit", "model", "slot")):
+                block = extract_balanced(script, match.start())
+                if block and block not in out:
+                    out.append(block)
+
+        # Extract defineProps (including withDefaults), defineEmits, defineModel, defineSlots
         patterns = [
-            r"(?:const\s+\w+\s*=\s*)?defineProps\s*(?:<[^>]+>)?\s*\([^;]*\)",
-            r"(?:const\s+\w+\s*=\s*)?defineEmits\s*(?:<[^>]+>)?\s*\([^;]*\)",
-            r"(?:const\s+\w+\s*=\s*)?defineModel\s*(?:<[^>]+>)?\s*\([^;]*\)",
-            r"(?:const\s+\w+\s*=\s*)?defineSlots\s*(?:<[^>]+>)?\s*\([^;]*\)",
-            r"export\s+interface\s+\w+[^{]*\{[^}]*\}",
-            r"export\s+type\s+\w+\s*=[^;]+;"
+            r"(?:const\s+\w+\s*=\s*)?(?:withDefaults\s*\(\s*)?defineProps",
+            r"(?:const\s+\w+\s*=\s*)?defineEmits",
+            r"(?:const\s+\w+\s*=\s*)?defineModel",
+            r"(?:const\s+\w+\s*=\s*)?defineSlots",
         ]
         for pat in patterns:
-            for match in re.finditer(pat, script, re.DOTALL):
-                block = match.group(0).strip()
-                if block:
+            for match in re.finditer(pat, script):
+                block = extract_balanced(script, match.start())
+                if block and block not in out:
                     out.append(block)
 
     # 2. Template slots

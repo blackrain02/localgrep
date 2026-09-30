@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-09-30
+
+### Added
+- **`--json` Flag Across All CLI Commands**: Native machine-readable JSON output for `lg contract`, `lg route`, `lg topo`, `lg prune`, `lg test`, `lg error`, `lg skill`, `lg status`, and default semantic search, enabling frictionless programmatic consumption by AI coding agents.
+- **Multi-line & Chained Route Block Parsing**: Parses Laravel route definitions spanning multiple lines, including multi-line controller arrays, `Route::match(['get', 'post'], ...)`, and trailing chained calls (`->name()`, `->middleware()`).
+- **Namespace & Module-Aware Controller Disambiguation**: Resolves identical controller class names (e.g. `XHRController` across 12 packages) by mapping `use` imports and prioritizing the route file's parent module directory with exact file-matching (`{clean_cls}.php`).
+- **Resource Route Expansion**: Automatically expands `Route::resource` and `Route::apiResource` into standard REST actions (`index`, `create`, `store`, `show`, `edit`, `update`, `destroy`) with full `->only()` and `->except()` filtering and exact action line mapping.
+- **Nested Route Group Tracking**: Tracks active URI prefixes and route name prefixes across nested closures via a curly brace stack.
+
+### Fixed
+- **Vue SFC `withDefaults` Contract Extraction**: Introduced `extract_balanced()` parser to extract full `withDefaults(defineProps<Props>(), ...)` blocks without leaking internal component lifecycle code (`onMounted`).
+
+---
+
 ## [0.4.0] - 2026-09-30
 
 ### Added
