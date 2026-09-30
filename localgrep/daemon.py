@@ -84,7 +84,10 @@ def init_model():
     warnings.filterwarnings("ignore")
 
     token = os.environ.get("HF_TOKEN")
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, token=token)
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, token=token, local_files_only=True)
+    except Exception:
+        tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, token=token)
 
     # 1. Check local ONNX model paths
     pkg_onnx = os.path.join(os.path.dirname(__file__), "model.onnx")
@@ -336,6 +339,39 @@ def extract_meaningful_file_snippet(full_path, terms, max_lines=12):
     except Exception:
         return "", 1
 
+def compute_file_path_score(filepath, terms, query):
+    base = os.path.splitext(os.path.basename(filepath))[0].lower()
+    f_lower = filepath.lower()
+    q_compact = query.lower().replace(" ", "").replace("-", "").replace("_", "")
+
+    score = 0.0
+    # Exact or near-exact basename matches
+    if q_compact and q_compact == base:
+        score += 20.0
+    elif q_compact and q_compact in base:
+        score += 15.0
+    elif terms and all(t in base for t in terms):
+        score += 12.0
+    else:
+        score += sum(3.5 for t in terms if t in base)
+
+    # General path matches
+    score += sum(1.0 for t in terms if t in f_lower)
+
+    # Noise dampening
+    if "/lang/" in f_lower or "/locales/" in f_lower:
+        score -= 15.0
+    if filepath.endswith(".json") or filepath.endswith(".lock"):
+        score -= 6.0
+    if "/tests/" in f_lower or "/test/" in f_lower:
+        score -= 4.0
+
+    # Code extension preference
+    if any(filepath.endswith(ext) for ext in (".vue", ".php", ".ts", ".js", ".py")):
+        score += 2.0
+
+    return score
+
 def get_candidates(query, cwd, top_k=3, max_candidates=50, search_dirs=None):
     terms = extract_search_terms(query)
     if not terms:
@@ -343,6 +379,14 @@ def get_candidates(query, cwd, top_k=3, max_candidates=50, search_dirs=None):
 
     expanded = expand_search_terms(terms, max_terms=12)
     candidates = {}
+
+    # Detect symbol / component intent for Tier 1 Fast-Path
+    q_clean = query.strip()
+    is_single_ident = bool(re.match(r'^[A-Za-z0-9_\-\.]+$', q_clean))
+    is_camel_pascal = bool(re.search(r'[a-z][A-Z]', q_clean))
+    is_symbol_intent = is_single_ident or is_camel_pascal or (
+        len(terms) <= 2 and not any(w in q_clean.lower() for w in ("how", "what", "where", "why", "logic", "explain", "bug", "recalculates"))
+    )
 
     if not search_dirs:
         target_candidates = ["resources", "app", "routes", "config", "src", "packages", "lib", "Modules"]
@@ -388,7 +432,49 @@ def get_candidates(query, cwd, top_k=3, max_candidates=50, search_dirs=None):
     if not search_dirs or "tests" not in search_dirs:
         globs += ["--glob", "!tests/**"]
 
-    # 1. Content-based search with ripgrep (Primary source of truth)
+    # Dampen translation / dictionary noise unless explicitly queried
+    if not any(k in query.lower() for k in ("lang", "translation", "locale", "dictionary")):
+        globs += [
+            "--glob", "!**/lang/**",
+            "--glob", "!**/locales/**",
+            "--glob", "!lang/**",
+            "--glob", "!locales/**",
+        ]
+
+    # 1. Path-based search (Always executed to discover primary component & class files)
+    try:
+        res_files = subprocess.run(
+            ["rg", "--files"] + globs + search_dirs,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        if res_files.stdout:
+            file_lines = [f.strip() for f in res_files.stdout.strip().split("\n") if f.strip()]
+            scored_files = []
+            for f in file_lines:
+                ps = compute_file_path_score(f, terms, query)
+                if ps > 2.0:
+                    scored_files.append((ps, f))
+            scored_files.sort(key=lambda x: x[0], reverse=True)
+
+            for ps, filepath in scored_files[:15]:
+                full_path = os.path.join(cwd, filepath)
+                snippet, best_line = extract_meaningful_file_snippet(full_path, terms)
+                if snippet:
+                    key = (filepath, str(best_line))
+                    candidates[key] = {
+                        "filepath": filepath,
+                        "lineno": str(best_line),
+                        "snippet": snippet,
+                        "path_bonus": ps,
+                        "content_score": 0.0
+                    }
+    except Exception:
+        pass
+
+    # 2. Content-based search with ripgrep
     try:
         regex_pattern = "|".join(expanded[:8])
         cmd = [
@@ -411,79 +497,81 @@ def get_candidates(query, cwd, top_k=3, max_candidates=50, search_dirs=None):
 
             text_lower = (filepath + " " + snippet).lower()
             score = sum(3 for t in terms if t in text_lower) + sum(1 for t in expanded if t in text_lower)
+
+            # Declaration boost
+            decl_keywords = ("class ", "function ", "interface ", "trait ", "const ", "export ", "<template", "<script")
+            if any(dk in snippet for dk in decl_keywords):
+                score += 3.0
+
             if any(filepath.endswith(ext) for ext in (".php", ".ts", ".vue", ".js", ".py")):
-                score += 1
+                score += 1.0
             scored_blocks.append((score, filepath, lineno, snippet))
 
         scored_blocks.sort(key=lambda x: x[0], reverse=True)
 
-        for _, filepath, lineno, snippet in scored_blocks:
-            if filepath and snippet and (filepath, lineno) not in candidates:
-                candidates[(filepath, lineno)] = {
-                    "filepath": filepath,
-                    "lineno": lineno,
-                    "snippet": snippet,
-                    "path_bonus": 0.0
-                }
-            if len(candidates) >= max_candidates:
-                break
+        for score, filepath, lineno, snippet in scored_blocks:
+            if filepath and snippet:
+                key = (filepath, lineno)
+                p_bonus = compute_file_path_score(filepath, terms, query)
+                if key in candidates:
+                    candidates[key]["content_score"] = max(candidates[key]["content_score"], score)
+                    candidates[key]["snippet"] = snippet
+                    candidates[key]["lineno"] = lineno
+                else:
+                    candidates[key] = {
+                        "filepath": filepath,
+                        "lineno": lineno,
+                        "snippet": snippet,
+                        "path_bonus": p_bonus,
+                        "content_score": score
+                    }
     except Exception:
         pass
-
-    # 2. Path-based search (Only to supplement if content search found few candidates)
-    if len(candidates) < max_candidates:
-        try:
-            path_pattern = "|".join(terms)
-            res_files = subprocess.run(
-                ["rg", "--files"] + globs + ["-i", "-e", path_pattern] + search_dirs,
-                cwd=cwd,
-                capture_output=True,
-                text=True,
-                check=False
-            )
-            if res_files.stdout:
-                file_lines = [f.strip() for f in res_files.stdout.strip().split("\n") if f.strip()]
-                def path_score(p):
-                    p_lower = p.lower()
-                    base = os.path.basename(p_lower)
-                    base_matches = sum(2 for t in terms if t in base)
-                    path_matches = sum(1 for t in terms if t in p_lower)
-                    return base_matches + path_matches
-
-                sorted_files = sorted(file_lines, key=path_score, reverse=True)
-                for filepath in sorted_files[:10]:
-                    # Don't add file if we already have content matches from it
-                    if any(k[0] == filepath for k in candidates):
-                        continue
-
-                    full_path = os.path.join(cwd, filepath)
-                    snippet, best_line = extract_meaningful_file_snippet(full_path, terms)
-                    if snippet:
-                        candidates[(filepath, str(best_line))] = {
-                            "filepath": filepath,
-                            "lineno": str(best_line),
-                            "snippet": snippet,
-                            "path_bonus": 0.5
-                        }
-                    if len(candidates) >= max_candidates:
-                        break
-        except Exception:
-            pass
 
     cand_list = list(candidates.values())
     if not cand_list:
         return []
 
-    # 3. Model scoring via ONNX / PyTorch
-    pairs = [[query, f"File: {c['filepath']}\n{c['snippet']}"] for c in cand_list]
-    logits = run_cross_encoder_inference(pairs, max_length=384)
+    # Tier 1: Fast-Path for symbol / component lookups (< 15ms)
+    if is_symbol_intent:
+        top_path_bonus = max((c.get("path_bonus", 0.0) for c in cand_list), default=0.0)
+        top_content_score = max((c.get("content_score", 0.0) for c in cand_list), default=0.0)
+
+        # If strong symbol or path matches exist, rank directly and bypass ONNX
+        if top_path_bonus >= 8.0 or top_content_score >= 8.0:
+            fast_ranked = []
+            for c in cand_list:
+                total = c.get("path_bonus", 0.0) * 1.5 + c.get("content_score", 0.0)
+                content_lower = (c["filepath"] + " " + c["snippet"]).lower()
+                matched_count = sum(1 for t in terms if t in content_lower)
+                total += matched_count * 2.0
+                if any(c["filepath"].endswith(ext) for ext in (".vue", ".php", ".ts", ".js", ".py")):
+                    total += 1.0
+                fast_ranked.append({
+                    "score": round(total, 3),
+                    "filepath": c["filepath"],
+                    "lineno": c["lineno"],
+                    "snippet": c["snippet"]
+                })
+            fast_ranked.sort(key=lambda x: x["score"], reverse=True)
+            return fast_ranked[:top_k]
+
+    # Tier 2: Neural Semantic Search (Bounded to top 12 candidates to guarantee < 250ms)
+    def initial_ranking_key(c):
+        return c.get("path_bonus", 0.0) + c.get("content_score", 0.0)
+
+    cand_list.sort(key=initial_ranking_key, reverse=True)
+    bounded_candidates = cand_list[:12]
+
+    pairs = [[query, f"File: {c['filepath']}\n{c['snippet']}"] for c in bounded_candidates]
+    logits = run_cross_encoder_inference(pairs, max_length=256)
 
     ranked = []
-    for score, cand in zip(logits, cand_list):
-        total_score = score + cand["path_bonus"]
+    for score, cand in zip(logits, bounded_candidates):
+        total_score = score + (cand["path_bonus"] * 0.8)
         content_lower = (cand["filepath"] + " " + cand["snippet"]).lower()
         matched_count = sum(1 for t in terms if t in content_lower)
-        total_score += matched_count * 2.5
+        total_score += matched_count * 2.0
         if any(cand["filepath"].endswith(ext) for ext in (".php", ".ts", ".vue", ".js", ".py")):
             total_score += 1.0
         ranked.append({
@@ -493,7 +581,7 @@ def get_candidates(query, cwd, top_k=3, max_candidates=50, search_dirs=None):
             "snippet": cand["snippet"]
         })
 
-    del pairs, cand_list, logits
+    del pairs, cand_list, bounded_candidates, logits
     import gc
     gc.collect()
 

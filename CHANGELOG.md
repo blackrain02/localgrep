@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.3] - 2026-09-30
+
+### Added
+- **Tier 1 Fast-Path Query Routing (<15ms)**: Automatically detects symbol, component, identifier, and PascalCase/camelCase queries. When high-confidence file or symbol declaration matches exist, bypasses the neural Cross-Encoder entirely, slashing query latency from >5000ms to sub-100ms.
+- **Hybrid Path + Content Discovery**: Decoupled path-based file discovery from content search constraints. `rg --files` runs concurrently with dedicated dynamic path scoring (`compute_file_path_score`), guaranteeing component declarations (e.g. `BinaTextEditor.vue` for `BinaEditor`) outrank incidental callers.
+- **Noise Dampening for Localization & Dictionaries**: Automatically excludes `**/lang/**` and `**/locales/**` from default code search scope (unless explicitly requested) and applies negative score penalties to eliminate dictionary saturation.
+- **Fully Offline Tokenizer Initialization**: Enforced `local_files_only=True` on Hugging Face tokenizer loading with automatic fallback, preventing network round-trips and cold-start latency.
+
+### Changed
+- Bounded neural Cross-Encoder candidate evaluation to the top 12 pre-ranked candidates with max sequence length 256, capping conceptual query execution time under 250ms.
+
+---
+
 ## [0.3.2] - 2026-09-29
 
 ### Added
