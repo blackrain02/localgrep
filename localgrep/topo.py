@@ -3,7 +3,16 @@ import json
 import re
 from typing import Dict, Any, List
 
+def find_project_root(cwd: str) -> str:
+    curr = os.path.abspath(cwd)
+    while curr and curr != "/":
+        if os.path.isfile(os.path.join(curr, "composer.json")) or os.path.isdir(os.path.join(curr, ".git")):
+            return curr
+        curr = os.path.dirname(curr)
+    return os.path.abspath(cwd)
+
 def get_project_topology(cwd: str) -> Dict[str, Any]:
+    root = find_project_root(cwd)
     topo = {
         "status": "ok",
         "app_name": "Unknown",
@@ -18,7 +27,7 @@ def get_project_topology(cwd: str) -> Dict[str, Any]:
     }
 
     # 1. Composer Inspection
-    comp_file = os.path.join(cwd, "composer.json")
+    comp_file = os.path.join(root, "composer.json")
     if os.path.isfile(comp_file):
         try:
             with open(comp_file, "r", encoding="utf-8") as f:
@@ -54,11 +63,11 @@ def get_project_topology(cwd: str) -> Dict[str, Any]:
             bina_mods = [k.replace("bina/", "") for k in req.keys() if k.startswith("bina/")]
             if not bina_mods:
                 # Check vendor/bina directory
-                bina_dir = os.path.join(cwd, "vendor", "bina")
+                bina_dir = os.path.join(root, "vendor", "bina")
                 if os.path.isdir(bina_dir):
                     bina_mods = [d for d in os.listdir(bina_dir) if os.path.isdir(os.path.join(bina_dir, d))]
                 else:
-                    mod_dir = os.path.join(cwd, "Modules")
+                    mod_dir = os.path.join(root, "Modules")
                     if os.path.isdir(mod_dir):
                         bina_mods = [d for d in os.listdir(mod_dir) if os.path.isdir(os.path.join(mod_dir, d))]
 
@@ -69,7 +78,7 @@ def get_project_topology(cwd: str) -> Dict[str, Any]:
             pass
 
     # 2. Package.json Inspection
-    pkg_file = os.path.join(cwd, "package.json")
+    pkg_file = os.path.join(root, "package.json")
     if os.path.isfile(pkg_file):
         try:
             with open(pkg_file, "r", encoding="utf-8") as f:
@@ -91,7 +100,7 @@ def get_project_topology(cwd: str) -> Dict[str, Any]:
 
     # 3. Server / DB / Queue Runtime Config
     db_default = "MySQL"
-    env_file = os.path.join(cwd, ".env")
+    env_file = os.path.join(root, ".env")
     if os.path.isfile(env_file):
         try:
             with open(env_file, "r", encoding="utf-8", errors="ignore") as f:
@@ -109,15 +118,15 @@ def get_project_topology(cwd: str) -> Dict[str, Any]:
 
     # 4. Entrypoints
     routes = []
-    if os.path.isfile(os.path.join(cwd, "routes", "web.php")):
+    if os.path.isfile(os.path.join(root, "routes", "web.php")):
         routes.append("routes/web.php")
-    if os.path.isfile(os.path.join(cwd, "routes", "api.php")):
+    if os.path.isfile(os.path.join(root, "routes", "api.php")):
         routes.append("routes/api.php")
 
     topo["entrypoints"]["routes"] = routes
-    if os.path.isdir(os.path.join(cwd, "resources", "js", "Pages")):
+    if os.path.isdir(os.path.join(root, "resources", "js", "Pages")):
         topo["entrypoints"]["pages"] = "resources/js/Pages"
-    if os.path.isdir(os.path.join(cwd, "resources", "config")):
+    if os.path.isdir(os.path.join(root, "resources", "config")):
         topo["entrypoints"]["settings"] = "resources/config"
 
     # Format Card
