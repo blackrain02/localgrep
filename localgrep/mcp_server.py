@@ -199,6 +199,48 @@ def localgrep_topo(path: str = ".") -> str:
         return f"Topology error: {resp.get('message') if resp else 'Daemon error'}"
     return resp.get("card", "")
 
+@app.tool()
+def localgrep_callers(symbol: str, path: str = ".", include_imports: bool = False) -> str:
+    """
+    Deterministic Call-Site & Reference Tracker: Find all actual invocations and references
+    to a method, function, or class across PHP and Vue/TS/JS. Automatically excludes
+    method definitions, class headers, docblocks, and comments.
+    """
+    cwd = os.path.abspath(path)
+    payload = {"action": "callers", "symbol": symbol, "include_imports": include_imports, "cwd": cwd}
+    resp = send_request(payload)
+    if not resp or resp.get("status") != "ok":
+        return f"Callers error: {resp.get('message') if resp else 'Daemon error'}"
+    return resp.get("card", "")
+
+@app.tool()
+def localgrep_event_map(filter: str = "", path: str = ".") -> str:
+    """
+    Laravel Event-Listener-Queue-Job Architecture Map: Maps registered events to listeners,
+    identifying whether each listener runs synchronously or queued, its queue connection,
+    and any dispatched jobs.
+    """
+    cwd = os.path.abspath(path)
+    payload = {"action": "event_map", "query": filter, "cwd": cwd}
+    resp = send_request(payload)
+    if not resp or resp.get("status") != "ok":
+        return f"Event map error: {resp.get('message') if resp else 'Daemon error'}"
+    return resp.get("card", "")
+
+@app.tool()
+def localgrep_schema(model: str, path: str = ".") -> str:
+    """
+    Offline Database Schema & Relationship Extractor: Instantly extracts model table columns,
+    types, nullability, indexing, casts, fillable attributes, and Eloquent relationships
+    without connecting to a live database or running tinker.
+    """
+    cwd = os.path.abspath(path)
+    payload = {"action": "schema", "model": model, "cwd": cwd}
+    resp = send_request(payload)
+    if not resp or resp.get("status") != "ok":
+        return f"Schema error: {resp.get('message') if resp else 'Daemon error'}"
+    return resp.get("card", "")
+
 def main():
     app.run("stdio")
 

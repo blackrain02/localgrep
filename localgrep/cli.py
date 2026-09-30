@@ -311,6 +311,9 @@ def main():
         print("  lg contract <file|component> [--json]      # Extract Vue props/emits, PHP class or TS signatures")
         print("  lg route '<uri|name|controller>' [--json]  # Map route directly to Controller action & file line")
         print("  lg topo [--json]                           # Dense executive project topology card for agent start")
+        print("  lg callers <Method|Class> [--json]         # Find actual call sites and references")
+        print("  lg event-map [<filter>] [--json]           # Laravel Event -> Listener -> Queue -> Job map")
+        print("  lg schema <Model> [--json]                 # Extract model table schema, columns, casts & relations")
         print("  lg prune <file> '<query>' [--json]         # Extract targeted function / code block from file")
         print("  <cmd> | lg '<query>'                       # Filter long CLI outputs via pipe")
         print("  lg filter '<query>'                        # Filter stdin manually")
@@ -459,6 +462,52 @@ def main():
             print(resp.get("card", ""))
         else:
             print(f"Topology error: {resp.get('message') if resp else 'Daemon error'}")
+        return
+
+    if cmd == "callers":
+        if len(args) < 2:
+            print("Usage: lg callers <symbol> [--json] [--all]")
+            sys.exit(1)
+        symbol = args[1]
+        include_imports = "--all" in sys.argv
+        payload = {"action": "callers", "symbol": symbol, "include_imports": include_imports, "cwd": cwd}
+        resp = send_request(payload)
+        if is_json:
+            print(json.dumps(resp or {"status": "error", "message": "Daemon error"}, indent=2))
+            return
+        if resp and resp.get("status") == "ok":
+            print(resp.get("card", ""))
+        else:
+            print(f"Callers error: {resp.get('message') if resp else 'Daemon error'}")
+        return
+
+    if cmd == "event-map":
+        query = args[1] if len(args) > 1 else ""
+        payload = {"action": "event_map", "query": query, "cwd": cwd}
+        resp = send_request(payload)
+        if is_json:
+            print(json.dumps(resp or {"status": "error", "message": "Daemon error"}, indent=2))
+            return
+        if resp and resp.get("status") == "ok":
+            print(resp.get("card", ""))
+        else:
+            print(f"Event map error: {resp.get('message') if resp else 'Daemon error'}")
+        return
+
+    if cmd == "schema":
+        if len(args) < 2:
+            print("Usage: lg schema <Model> [--json]")
+            sys.exit(1)
+        model = args[1]
+        payload = {"action": "schema", "model": model, "cwd": cwd}
+        resp = send_request(payload)
+        if is_json:
+            print(json.dumps(resp or {"status": "error", "message": "Daemon error"}, indent=2))
+            return
+        if resp and resp.get("status") == "ok":
+            print(resp.get("card", ""))
+        else:
+            print(f"Schema error: {resp.get('message') if resp else 'Daemon error'}")
         return
 
     if cmd == "filter":

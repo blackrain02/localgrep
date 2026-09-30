@@ -836,6 +836,37 @@ def handle_client(conn):
                 except ImportError:
                     from topo import get_project_topology
             resp = get_project_topology(cwd)
+        elif action == "callers":
+            symbol = req.get("symbol", "")
+            include_imports = req.get("include_imports", False)
+            try:
+                from localgrep.callers import find_callers
+            except ImportError:
+                try:
+                    from .callers import find_callers
+                except ImportError:
+                    from callers import find_callers
+            resp = find_callers(symbol, cwd, include_imports=include_imports, top_k=top_k)
+        elif action == "event_map":
+            query = req.get("query", "")
+            try:
+                from localgrep.events import get_event_map
+            except ImportError:
+                try:
+                    from .events import get_event_map
+                except ImportError:
+                    from events import get_event_map
+            resp = get_event_map(query, cwd)
+        elif action == "schema":
+            model = req.get("model", "")
+            try:
+                from localgrep.schema import get_model_schema
+            except ImportError:
+                try:
+                    from .schema import get_model_schema
+                except ImportError:
+                    from schema import get_model_schema
+            resp = get_model_schema(model, cwd)
         else:
             query = req.get("query", "")
             terms = extract_search_terms(query)

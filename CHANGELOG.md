@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-09-30
+
+### Added
+- **`lg callers <Method|Class>`**: Deterministic call-site and reference tracker across PHP and Vue/TS/JS. Filters out method definitions, docblocks, comments, and pure imports to surface actual invocations with enclosing caller context (e.g. `submitOrder()`) in <25ms.
+- **`lg event-map [<filter>]`**: Laravel Event-Listener-Queue-Job architecture mapper. Parses all `EventServiceProvider` files across modular packages, mapping events to listeners, detecting synchronous vs queued execution (`ShouldQueue`), queue connections, and dispatched background jobs.
+- **`lg schema <Model>`**: Offline database schema and relationship extractor. Parses Model `$table`, `$fillable`, `$guarded`, and `$casts` / `casts()`, combines them with migration column definitions (types, nullability, indexing), and extracts all Eloquent relationships without connecting to a live database or running tinker (<20ms).
+- **MCP Server Expansion**: Added `localgrep_callers`, `localgrep_event_map`, and `localgrep_schema` tools to `mcp_server.py`.
+- **Test Suite**: Added comprehensive test suite in `tests/test_phase2.py` with 100% passing assertions.
+
+---
+
 ## [0.4.1] - 2026-09-30
 
 ### Added

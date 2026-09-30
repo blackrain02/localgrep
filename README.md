@@ -152,7 +152,60 @@ lg skill "slow database query profiling and duplicate N+1 queries"
 lg skill "YAGNI simplify code and remove bloat"
 ```
 
-### 7. Daemon Lifecycle & Memory Status (`lg status`, `lg stop`)
+### 7. Component & Class Contract Extraction (`lg contract`)
+Extract clean public API contracts (Vue `defineProps`/`defineEmits`/`defineModel`/slots, PHP class methods/properties, TS interfaces) in <10ms without reading hundreds of lines of implementation code:
+```bash
+lg contract resources/js/Components/UI/Card.vue
+lg contract app/Models/User.php
+```
+
+### 8. Fast Route-to-Controller Mapper (`lg route`)
+Map URLs, route names, or controller actions to their exact file line in `<25ms` with full support for multi-line definitions, route groups, and resource route expansion:
+```bash
+lg route "xhr.taxes"
+lg route "accounts.index"
+lg route "GET /orders"
+```
+
+### 9. Instant Zero-Token Project Topology Card (`lg topo`)
+Generate an ultra-dense, 150-token executive summary of framework, PHP, active frontend stack, modular packages, DB/queue runtime, and entrypoints:
+```bash
+lg topo
+lg topo --json
+```
+
+### 10. Call-Site & Reference Tracker (`lg callers`)
+Find deterministic invocations and references to any method, function, or class across PHP and Vue/TS/JS with enclosing caller context, filtering out definitions and comments:
+```bash
+lg callers wasChanged
+lg callers forceSyncPush
+lg callers RecordToolInvocation
+```
+
+### 11. Laravel Event Architecture Map (`lg event-map`)
+Map Events to Listeners across all modular packages, detecting synchronous vs queued execution (`ShouldQueue`), queue connections, and dispatched background jobs:
+```bash
+lg event-map
+lg event-map Order
+```
+
+### 12. Offline Model Schema & Relationship Extractor (`lg schema`)
+Extract model table columns, types, nullability, indexing, casts, fillable attributes, and Eloquent relationships without connecting to a live database:
+```bash
+lg schema Order
+lg schema User
+lg schema CartItem --json
+```
+
+### 13. Machine-Readable Agent JSON Mode (`--json`)
+Append `--json` to any command for structured machine consumption by AI coding assistants:
+```bash
+lg route "xhr.taxes" --json
+lg callers wasChanged --json
+lg schema Order --json
+```
+
+### 14. Daemon Lifecycle & Memory Status (`lg status`, `lg stop`)
 Inspect memory RSS, runtime uptime, backend provider, or gracefully terminate the daemon:
 ```bash
 lg status
