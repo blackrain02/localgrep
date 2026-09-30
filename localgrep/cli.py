@@ -314,6 +314,9 @@ def main():
         print("  lg callers <Method|Class> [--json]         # Find actual call sites and references")
         print("  lg event-map [<filter>] [--json]           # Laravel Event -> Listener -> Queue -> Job map")
         print("  lg schema <Model> [--json]                 # Extract model table schema, columns, casts & relations")
+        print("  lg verify-patch <file> [target] [--json]   # Pre-validate edit block, resolve StartLine/EndLine")
+        print("  lg audit-diff [--staged] [--file <f>]      # Audit git diff for debug code, markers, secrets & lints")
+        print("  lg test-isolate <cmd...> [--json]          # Run test command & distill failure noise to exact app frame")
         print("  lg prune <file> '<query>' [--json]         # Extract targeted function / code block from file")
         print("  <cmd> | lg '<query>'                       # Filter long CLI outputs via pipe")
         print("  lg filter '<query>'                        # Filter stdin manually")
@@ -508,6 +511,78 @@ def main():
             print(resp.get("card", ""))
         else:
             print(f"Schema error: {resp.get('message') if resp else 'Daemon error'}")
+        return
+
+    if cmd == "verify-patch":
+        if len(args) < 2:
+            print("Usage: lg verify-patch <file> [target_content] [--search <text>] [--json]")
+            sys.exit(1)
+        file_path = args[1]
+        target_content = ""
+        if len(args) > 2 and not args[2].startswith("--"):
+            target_content = args[2]
+        elif "--search" in sys.argv:
+            s_idx = sys.argv.index("--search")
+            if s_idx + 1 < len(sys.argv):
+                target_content = sys.argv[s_idx + 1]
+        elif is_piped_input():
+            target_content = sys.stdin.read()
+
+        if not target_content:
+            print("Error: Target content to verify is required (pass as argument, via --search, or pipe via stdin).")
+            sys.exit(1)
+
+        payload = {"action": "verify_patch", "file": file_path, "target_content": target_content, "cwd": cwd}
+        resp = send_request(payload)
+        if is_json:
+            print(json.dumps(resp or {"status": "error", "message": "Daemon error"}, indent=2))
+            return
+        if resp:
+            print(resp.get("card", ""))
+        else:
+            print("Verify patch error: Daemon error")
+        return
+
+    if cmd == "audit-diff":
+        staged = "--staged" in sys.argv
+        target_file = None
+        if "--file" in sys.argv:
+            f_idx = sys.argv.index("--file")
+            if f_idx + 1 < len(sys.argv):
+                target_file = sys.argv[f_idx + 1]
+        elif len(args) > 1 and not args[1].startswith("--"):
+            target_file = args[1]
+
+        payload = {"action": "audit_diff", "staged": staged, "file": target_file, "cwd": cwd}
+        resp = send_request(payload)
+        if is_json:
+            print(json.dumps(resp or {"status": "error", "message": "Daemon error"}, indent=2))
+            return
+        if resp:
+            print(resp.get("card", ""))
+        else:
+            print("Audit diff error: Daemon error")
+        return
+
+    if cmd == "test-isolate":
+        if is_piped_input():
+            raw_output = sys.stdin.read()
+            payload = {"action": "test_isolate", "output": raw_output, "cwd": cwd}
+        elif len(args) > 1:
+            test_cmd = [a for a in args[1:] if a != "--json"]
+            payload = {"action": "test_isolate", "cmd": test_cmd, "cwd": cwd}
+        else:
+            print("Usage: lg test-isolate <test_command...> OR <command> | lg test-isolate [--json]")
+            sys.exit(1)
+
+        resp = send_request(payload)
+        if is_json:
+            print(json.dumps(resp or {"status": "error", "message": "Daemon error"}, indent=2))
+            return
+        if resp:
+            print(resp.get("card", ""))
+        else:
+            print("Test isolate error: Daemon error")
         return
 
     if cmd == "filter":

@@ -241,6 +241,55 @@ def localgrep_schema(model: str, path: str = ".") -> str:
         return f"Schema error: {resp.get('message') if resp else 'Daemon error'}"
     return resp.get("card", "")
 
+@app.tool()
+def localgrep_verify_patch(file_path: str, target_content: str, path: str = ".") -> str:
+    """
+    Pre-validate Edit/Patch Block: Validates target content uniqueness, resolves exact
+    StartLine and EndLine, detects indentation/whitespace discrepancies, and returns
+    drop-in arguments for replace_file_content or diff tools.
+    """
+    cwd = os.path.abspath(path)
+    payload = {"action": "verify_patch", "file": file_path, "target_content": target_content, "cwd": cwd}
+    resp = send_request(payload)
+    if not resp:
+        return "Verify patch error: Daemon error"
+    return resp.get("card", "")
+
+@app.tool()
+def localgrep_audit_diff(staged_only: bool = False, file: str = "", path: str = ".") -> str:
+    """
+    Git Diff Code Auditor: Audits current git diff for leftover debug calls (dd, dump, console.log),
+    temporary markers (TODO remove), potential hardcoded secrets, and PHP syntax errors before committing.
+    """
+    cwd = os.path.abspath(path)
+    f_val = file if file else None
+    payload = {"action": "audit_diff", "staged": staged_only, "file": f_val, "cwd": cwd}
+    resp = send_request(payload)
+    if not resp:
+        return "Audit diff error: Daemon error"
+    return resp.get("card", "")
+
+@app.tool()
+def localgrep_test_isolate(test_command: str = "", raw_output: str = "", path: str = ".") -> str:
+    """
+    Test Failure Distiller & Isolator: Executes test command or parses raw test output,
+    stripping 95% of framework and vendor stack frames to isolate the exact failing test,
+    assertion reason, application stack frame, and code snippet.
+    """
+    cwd = os.path.abspath(path)
+    if raw_output:
+        payload = {"action": "test_isolate", "output": raw_output, "cwd": cwd}
+    elif test_command:
+        cmd_parts = test_command.split()
+        payload = {"action": "test_isolate", "cmd": cmd_parts, "cwd": cwd}
+    else:
+        return "Error: Either test_command or raw_output must be provided."
+
+    resp = send_request(payload)
+    if not resp:
+        return "Test isolate error: Daemon error"
+    return resp.get("card", "")
+
 def main():
     app.run("stdio")
 

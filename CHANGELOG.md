@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-09-30
+
+### Added
+- **`lg verify-patch <file> [target] [--json]`**: Pre-validation of edit blocks for code replacement tools (`replace_file_content`). Checks uniqueness, resolves exact 1-indexed `StartLine` and `EndLine`, detects indentation/whitespace discrepancies (tabs vs spaces), auto-resolves actual file indentation, and outputs drop-in tool arguments.
+- **`lg audit-diff [--staged] [--file <f>] [--json]`**: Pre-commit code sanity auditor. Scans git diff for leftover debug calls (`dd`, `dump`, `ray`, `var_dump`, `console.log`, `debugger`), temporary markers (`TODO: remove`), potential secrets/tokens, and runs PHP syntax validation.
+- **`lg test-isolate <command...> [--json]`**: Test failure noise isolator for Pest, PHPUnit, and Python unittest. Strips 95% of framework and vendor stack traces to distill test failures into failure description, exact test location, failure assertion message, application stack frame, and snippet.
+- **MCP Server Expansion**: Added `localgrep_verify_patch`, `localgrep_audit_diff`, and `localgrep_test_isolate` tools to `mcp_server.py`.
+- **Unit Test Suite**: Added `tests/test_phase3.py` with 100% test coverage across patch verification, whitespace correction, and test isolation.
+
+---
+
 ## [0.5.1] - 2026-09-30
 
 ### Fixed

@@ -867,6 +867,44 @@ def handle_client(conn):
                 except ImportError:
                     from schema import get_model_schema
             resp = get_model_schema(model, cwd)
+        elif action == "verify_patch":
+            file_path = req.get("file", "")
+            target_content = req.get("target_content", "")
+            try:
+                from localgrep.verify_patch import verify_patch
+            except ImportError:
+                try:
+                    from .verify_patch import verify_patch
+                except ImportError:
+                    from verify_patch import verify_patch
+            resp = verify_patch(file_path, target_content, cwd=cwd)
+        elif action == "audit_diff":
+            staged = req.get("staged", False)
+            file_path = req.get("file", None)
+            try:
+                from localgrep.audit_diff import audit_diff
+            except ImportError:
+                try:
+                    from .audit_diff import audit_diff
+                except ImportError:
+                    from audit_diff import audit_diff
+            resp = audit_diff(cwd, staged_only=staged, file_path=file_path)
+        elif action == "test_isolate":
+            raw_output = req.get("output", "")
+            cmd = req.get("cmd", [])
+            try:
+                from localgrep.test_isolate import parse_test_output, run_test_isolate
+            except ImportError:
+                try:
+                    from .test_isolate import parse_test_output, run_test_isolate
+                except ImportError:
+                    from test_isolate import parse_test_output, run_test_isolate
+            if raw_output:
+                resp = parse_test_output(raw_output, cwd=cwd)
+            elif cmd:
+                resp = run_test_isolate(cmd, cwd=cwd)
+            else:
+                resp = {"status": "error", "message": "Neither output nor cmd provided for test_isolate"}
         else:
             query = req.get("query", "")
             terms = extract_search_terms(query)
