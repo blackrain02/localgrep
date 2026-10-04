@@ -85,7 +85,7 @@ def extract_balanced(text: str, start_pos: int) -> str:
         idx += 1
     return text[start_pos:idx].strip()
 
-def extract_vue_contract(content: str) -> str:
+def extract_vue_contract(content: str, full: bool = False) -> str:
     out = []
     # 1. Script block
     script_m = re.search(r"<script(\s+[^>]*)?>(.*?)</script>", content, re.DOTALL)
@@ -96,7 +96,7 @@ def extract_vue_contract(content: str) -> str:
         for match in re.finditer(r"(?:export\s+)?(?:interface|type)\s+([A-Za-z0-9_]+)[^{;]*\{", script):
             name = match.group(1)
             is_exported = match.group(0).startswith("export")
-            if is_exported or any(k in name.lower() for k in ("prop", "emit", "model", "slot")):
+            if is_exported or any(k in name.lower() for k in ("prop", "emit", "model", "slot")) or full:
                 block = extract_balanced(script, match.start())
                 if block and block not in out:
                     out.append(block)
@@ -108,13 +108,82 @@ def extract_vue_contract(content: str) -> str:
             r"(?:const\s+\w+\s*=\s*)?defineModel",
             r"(?:const\s+\w+\s*=\s*)?defineSlots",
         ]
+        if full:
+            patterns.append(r"(?:const\s+\w+\s*=\s*)?defineExpose")
+
         for pat in patterns:
             for match in re.finditer(pat, script):
                 block = extract_balanced(script, match.start())
                 if block and block not in out:
                     out.append(block)
 
-    # 2. Template slots
+        if full:
+            # 2. Extract reactive state variables (ref, reactive, computed)
+            state_items = []
+            for m in re.finditer(r"(?:const|let)\s+([a-zA-Z0-9_]+)\s*=\s*(ref|reactive|computed)\s*(?:<[^>]+>)?\s*\(", script):
+                var_name = m.group(1)
+                state_type = m.group(2)
+                state_items.append(f"{var_name} ({state_type})")
+            if state_items:
+                unique_state = list(dict.fromkeys(state_items))[:20]
+                out.append(f"// Reactive State: {', '.join(unique_state)}")
+
+            # 3. Lifecycle hooks
+            hook_names = [
+                "onMounted", "onUnmounted", "onBeforeMount", "onBeforeUnmount",
+                "onUpdated", "onBeforeUpdate", "onActivated", "onDeactivated"
+            ]
+            hook_summaries = []
+            for h in hook_names:
+                for match in re.finditer(rf"\b{h}\s*\(", script):
+                    block = extract_balanced(script, match.start())
+                    if block:
+                        invocations = re.findall(r"\b([a-zA-Z0-9_]+)\s*\(", block)
+                        called = [fn for fn in invocations if fn not in (h, "async", "function", "if", "for", "while", "console", "log", "error", "catch", "then", "setTimeout", "setInterval", "addEventListener", "removeEventListener") and len(fn) > 2]
+                        unique_called = list(dict.fromkeys(called))[:5]
+                        if unique_called:
+                            hook_summaries.append(f"  - {h}: calls [{', '.join(unique_called)}]")
+                        else:
+                            hook_summaries.append(f"  - {h}")
+            if hook_summaries:
+                out.append("// Lifecycle Hooks:\n" + "\n".join(hook_summaries))
+
+            # 4. Watchers
+            watch_items = []
+            for m in re.finditer(r"\bwatch\s*\(", script):
+                call_text = extract_balanced(script, m.start())
+                if call_text:
+                    inner = call_text[call_text.find("(") + 1:].strip()
+                    arg = ""
+                    dp = db = dc = 0
+                    for ch in inner:
+                        if ch == '(':
+                            dp += 1
+                        elif ch == ')':
+                            if dp == 0 and db == 0 and dc == 0:
+                                break
+                            dp -= 1
+                        elif ch == '[':
+                            db += 1
+                        elif ch == ']':
+                            db -= 1
+                        elif ch == '{':
+                            dc += 1
+                        elif ch == '}':
+                            dc -= 1
+                        elif ch == ',' and dp == 0 and db == 0 and dc == 0:
+                            break
+                        arg += ch
+                    arg = arg.strip().replace("\n", " ").replace("\t", " ")
+                    if arg:
+                        watch_items.append(arg)
+            for m in re.finditer(r"\bwatchEffect\s*\(", script):
+                watch_items.append("watchEffect")
+            if watch_items:
+                unique_watch = list(dict.fromkeys(watch_items))[:10]
+                out.append(f"// Watchers: {', '.join(unique_watch)}")
+
+    # Template slots
     template_m = re.search(r"<template(\s+[^>]*)?>(.*?)</template>", content, re.DOTALL)
     if template_m:
         slots = re.findall(r'<slot\s*(?:name=["\']([^"\']+)["\'])?', template_m.group(2))
@@ -125,7 +194,7 @@ def extract_vue_contract(content: str) -> str:
 
     return "\n\n".join(out) if out else "// No public props/emits found in component."
 
-def extract_php_contract(content: str) -> str:
+def extract_php_contract(content: str, full: bool = False) -> str:
     try:
         from tree_sitter_languages import get_parser
         parser = get_parser("php")
@@ -137,6 +206,7 @@ def extract_php_contract(content: str) -> str:
         out = []
         ns = ""
         type_header = ""
+        traits = []
         body_items = []
 
         def walk(node):
@@ -147,14 +217,22 @@ def extract_php_contract(content: str) -> str:
                         ns = f"namespace {c.text.decode('utf-8')};"
             elif node.type in ("class_declaration", "interface_declaration", "trait_declaration"):
                 type_header = node.text.decode("utf-8", errors="ignore").split("{")[0].strip()
+            elif node.type in ("use_declaration", "trait_use_clause"):
+                if node.parent and node.parent.type == "declaration_list":
+                    t_text = node.text.decode("utf-8", errors="ignore").strip()
+                    traits.append(f"    {t_text}")
             elif node.type == "property_declaration":
                 p_text = node.text.decode("utf-8", errors="ignore").strip()
                 if "public" in p_text and not p_text.startswith("private") and not p_text.startswith("protected"):
+                    body_items.append(f"    {p_text}")
+                elif full and ("protected" in p_text or any(k in p_text for k in ("$casts", "$fillable", "$guarded", "$hidden", "$table", "$with"))):
                     body_items.append(f"    {p_text}")
             elif node.type == "method_declaration":
                 m_text = node.text.decode("utf-8", errors="ignore").strip()
                 sig = m_text.split("{")[0].strip()
                 if "public function" in sig or (not sig.startswith("private") and not sig.startswith("protected") and "function" in sig):
+                    body_items.append(f"    {sig};")
+                elif full and ("protected function" in sig or "protected static function" in sig):
                     body_items.append(f"    {sig};")
 
             for child in node.children:
@@ -166,6 +244,8 @@ def extract_php_contract(content: str) -> str:
             out.append(ns)
         if type_header:
             out.append(f"{type_header} {{")
+            if full and traits:
+                out.extend(traits)
             out.extend(body_items)
             out.append("}")
         return "\n".join(out) if out else "// No public class or interface definitions found."
@@ -174,22 +254,35 @@ def extract_php_contract(content: str) -> str:
     out = []
     ns = re.search(r"namespace\s+([^;]+);", content)
     cls = re.search(r"((?:abstract\s+|final\s+)?(?:class|interface|trait)\s+\w+[^{]*)\{", content)
-    props = re.findall(r"^\s*public\s+(?:readonly\s+)?(?:[\w\\?|]+\s+)?\$\w+[^;]*;", content, re.MULTILINE)
-    methods = re.findall(r"^\s*public\s+(?:static\s+)?function\s+\w+\s*\([^)]*\)\s*(?::\s*[\w\\?|]+)?", content, re.MULTILINE)
+    body = content[cls.end():] if cls else content
+    traits = re.findall(r"^\s*use\s+([A-Za-z0-9_,\s\\]+)\s*;", body, re.MULTILINE)
+    props = re.findall(r"^\s*public\s+(?:readonly\s+)?(?:[\w\\?|]+\s+)?\$\w+[^;]*;", body, re.MULTILINE)
+    methods = re.findall(r"^\s*public\s+(?:static\s+)?function\s+\w+\s*\([^)]*\)\s*(?::\s*[\w\\?|]+)?", body, re.MULTILINE)
 
     if ns:
         out.append(f"namespace {ns.group(1).strip()};")
     if cls:
         out.append(f"{cls.group(1).strip()} {{")
+    if full and traits:
+        for t in traits:
+            out.append(f"    use {t.strip()};")
     for p in props:
         out.append(f"    {p.strip()}")
+    if full:
+        prot_props = re.findall(r"^\s*protected\s+(?:[\w\\?|]+\s+)?\$(?:casts|fillable|guarded|hidden|table)\b[^;]*;", content, re.MULTILINE)
+        for pp in prot_props:
+            out.append(f"    {pp.strip()}")
     for m in methods:
         out.append(f"    {m.strip()};")
+    if full:
+        prot_methods = re.findall(r"^\s*protected\s+(?:static\s+)?function\s+\w+\s*\([^)]*\)\s*(?::\s*[\w\\?|]+)?", content, re.MULTILINE)
+        for pm in prot_methods:
+            out.append(f"    {pm.strip()};")
     if cls:
         out.append("}")
     return "\n".join(out) if out else "// No public PHP contract found."
 
-def extract_ts_js_contract(content: str) -> str:
+def extract_ts_js_contract(content: str, full: bool = False) -> str:
     try:
         from tree_sitter_languages import get_parser
         parser = get_parser("typescript")
@@ -203,15 +296,14 @@ def extract_ts_js_contract(content: str) -> str:
             n_type = node.type
             if n_type in ("export_statement", "interface_declaration", "type_alias_declaration"):
                 text = node.text.decode("utf-8", errors="ignore").strip()
-                out.append(text)
+                if text.startswith("export") or full:
+                    out.append(text)
             elif n_type in ("function_declaration", "lexical_declaration"):
                 text = node.text.decode("utf-8", errors="ignore").strip()
-                # If exported
                 if text.startswith("export "):
                     sig = text.split("{")[0].strip()
                     out.append(f"{sig};")
-                elif "export" in content:
-                    # Check if exported at bottom
+                elif full:
                     sig = text.split("{")[0].strip()
                     if sig:
                         out.append(f"{sig};")
@@ -219,18 +311,19 @@ def extract_ts_js_contract(content: str) -> str:
 
     # Regex fallback
     funcs = re.findall(r"^\s*export\s+(?:async\s+)?function\s+\w+\s*(?:<[^>]+>)?\s*\([^)]*\)\s*(?::\s*[^;{\n]+)?", content, re.MULTILINE)
-    interfaces = re.findall(r"^\s*export\s+(?:interface|type)\s+\w+[^;{\n]*\{[^}]*\}", content, re.MULTILINE | re.DOTALL)
+    interfaces = re.findall(r"^\s*(?:export\s+)?(?:interface|type)\s+\w+[^;{\n]*\{[^}]*\}", content, re.MULTILINE | re.DOTALL)
     consts = re.findall(r"^\s*export\s+const\s+\w+\s*(?::\s*[^=]+)?", content, re.MULTILINE)
     out = []
     for i in interfaces:
-        out.append(i.strip())
+        if i.strip().startswith("export") or full:
+            out.append(i.strip())
     for c in consts:
         out.append(c.strip() + ";")
     for f in funcs:
         out.append(f.strip() + ";")
     return "\n\n".join(out) if out else "// No exported signatures found."
 
-def extract_contract(target: str, cwd: str) -> Dict[str, Any]:
+def extract_contract(target: str, cwd: str, full: bool = False) -> Dict[str, Any]:
     full_path = resolve_target_file(target, cwd)
     if not full_path or not os.path.isfile(full_path):
         return {
@@ -246,14 +339,14 @@ def extract_contract(target: str, cwd: str) -> Dict[str, Any]:
             content = f.read()
 
         if ext == ".vue":
-            contract = extract_vue_contract(content)
-            lang = "Vue 3 Component"
+            contract = extract_vue_contract(content, full=full)
+            lang = "Vue 3 Component" + (" (Full Contract & Lifecycle)" if full else "")
         elif ext == ".php":
-            contract = extract_php_contract(content)
-            lang = "PHP Class / Interface"
+            contract = extract_php_contract(content, full=full)
+            lang = "PHP Class / Interface" + (" (Full Contract & Internals)" if full else "")
         elif ext in (".ts", ".tsx", ".js", ".jsx"):
-            contract = extract_ts_js_contract(content)
-            lang = "TypeScript / JavaScript Module"
+            contract = extract_ts_js_contract(content, full=full)
+            lang = "TypeScript / JavaScript Module" + (" (Full Contract)" if full else "")
         else:
             contract = "// File type not supported for contract extraction."
             lang = "Unknown"
@@ -263,6 +356,7 @@ def extract_contract(target: str, cwd: str) -> Dict[str, Any]:
             "target": target,
             "filepath": rel_path,
             "language": lang,
+            "full": full,
             "contract": contract
         }
     except Exception as e:

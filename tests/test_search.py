@@ -2,6 +2,12 @@ import unittest
 from localgrep.daemon import extract_search_terms, extract_meaningful_file_snippet
 from localgrep.chunker import chunk_file
 
+try:
+    import tree_sitter_languages
+    HAS_TREE_SITTER = True
+except ImportError:
+    HAS_TREE_SITTER = False
+
 class TestSearchTerms(unittest.TestCase):
     def test_camel_case_splitting(self):
         terms = extract_search_terms("userProfileHeader")
@@ -68,6 +74,7 @@ class TestMorphologicalStemmingAndTaxonomy(unittest.TestCase):
         self.assertIn("issue", expanded_s2)
 
 class TestChunker(unittest.TestCase):
+    @unittest.skipUnless(HAS_TREE_SITTER, "tree_sitter_languages required for AST chunking")
     def test_php_free_function_chunking(self):
         php_lines = [
             "<?php\n",
@@ -86,6 +93,7 @@ class TestChunker(unittest.TestCase):
         self.assertIn("ast_class_declaration", kinds)
         self.assertIn("ast_method_declaration", kinds)
 
+    @unittest.skipUnless(HAS_TREE_SITTER, "tree_sitter_languages required for AST chunking")
     def test_vue_sfc_chunking(self):
         vue_lines = [
             "<template>\n",

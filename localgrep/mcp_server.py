@@ -140,19 +140,21 @@ def localgrep_skill(intent: str, path: str = ".", top_k: int = 3) -> str:
     return "\n".join(out)
 
 @app.tool()
-def localgrep_contract(target: str, path: str = ".") -> str:
+def localgrep_contract(target: str, path: str = ".", full: bool = False) -> str:
     """
-    Component & Class Contract Extractor: Extract Vue defineProps/defineEmits/slots,
-    PHP public methods/constructor parameters, or TypeScript interfaces in <10ms.
-    Eliminates reading huge 400+ line files when you only need to know props or method signatures.
+    Component & Class Contract Extractor: Extract Vue defineProps/defineEmits/slots/hooks,
+    PHP public methods/constructor parameters/traits, or TypeScript interfaces in <10ms.
+    Set full=True to extract lifecycle hooks (onMounted, etc.), watchers, reactive state, and internal properties.
+    Eliminates reading huge 400+ line files when you only need to know props, lifecycle or method signatures.
     """
     cwd = os.path.abspath(path)
-    payload = {"action": "contract", "target": target, "cwd": cwd}
+    payload = {"action": "contract", "target": target, "cwd": cwd, "full": full}
     resp = send_request(payload)
     if not resp or resp.get("status") != "ok":
         return f"Error extracting contract for '{target}': {resp.get('message') if resp else 'Daemon error'}"
 
-    return f"=== Public Contract: {resp.get('filepath')} [{resp.get('language')}] ===\n{'-'*50}\n{resp.get('contract', '')}\n{'-'*50}"
+    title = "Full Contract & Internals" if full else "Public Contract"
+    return f"=== {title}: {resp.get('filepath')} [{resp.get('language')}] ===\n{'-'*50}\n{resp.get('contract', '')}\n{'-'*50}"
 
 @app.tool()
 def localgrep_route(query: str, path: str = ".", top_k: int = 5) -> str:

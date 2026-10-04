@@ -809,6 +809,7 @@ def handle_client(conn):
             resp = handle_skill(query, cwd, top_k=top_k)
         elif action == "contract":
             target = req.get("target", "")
+            full = bool(req.get("full", False))
             try:
                 from localgrep.contract import extract_contract
             except ImportError:
@@ -816,7 +817,7 @@ def handle_client(conn):
                     from .contract import extract_contract
                 except ImportError:
                     from contract import extract_contract
-            resp = extract_contract(target, cwd)
+            resp = extract_contract(target, cwd, full=full)
         elif action == "route":
             query = req.get("query", "")
             try:

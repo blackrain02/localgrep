@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-10-04
+
+### Added
+- **Multi-Tier AST Extraction (`lg contract <file> [--full]`)**:
+  - Eliminates over-pruning by providing full visibility into component and model internals without reading entire 400+ line files.
+  - **Vue 3 SFC**: Extracts `defineExpose`, internal reactive state variables (`ref`, `reactive`, `computed`), lifecycle hooks (`onMounted`, `onUnmounted`, etc.) with summarized invoked functions, and balanced watchers (`watch([a, b], ...)`, `watchEffect`).
+  - **PHP**: Extracts traits used within classes (`use HasFactory, SoftDeletes;`), protected configuration arrays (`$casts`, `$fillable`, `$table`, `$hidden`), and protected lifecycle methods/scopes (`booted()`, `casts()`).
+  - **TS/JS**: Extracts internal interfaces, type aliases, and unexported module declarations.
+  - **MCP Server & CLI**: Added `full: bool = False` to `localgrep_contract` in MCP server, and `--full` / `--hooks` flags to `lg contract`.
+- **Zero Cold-Start Architecture via Linux User Service (`systemd --user`)**:
+  - Solves the 3-6s cold start and CLI background task dropping by running `localgrep.service` under `systemd --user` with persistent `loginctl enable-linger`.
+  - Keeps ONNX runtime model warm in memory for instant (<5ms) agent query execution.
+  - Automatic restart on failure and zero-maintenance daemon management.
+
+---
+
 ## [0.6.1] - 2026-09-30
 
 ### Added

@@ -308,7 +308,7 @@ def main():
         print("LocalGrep (lg): Fast index-free local semantic search & context pruner for AI coding agents.\n")
         print("Usage:")
         print("  lg '<query>' [--json]                      # Semantic codebase search")
-        print("  lg contract <file|component> [--json]      # Extract Vue props/emits, PHP class or TS signatures")
+        print("  lg contract <file|component> [--full] [--json] # Extract Vue props/emits/hooks, PHP class or TS signatures")
         print("  lg route '<uri|name|controller>' [--json]  # Map route directly to Controller action & file line")
         print("  lg topo [--json]                           # Dense executive project topology card for agent start")
         print("  lg callers <Method|Class> [--json]         # Find actual call sites and references")
@@ -411,17 +411,20 @@ def main():
         return
 
     if cmd == "contract":
-        if len(args) < 2:
-            print("Usage: lg contract <file_or_component> [--json]")
+        contract_args = [a for a in args[1:] if a not in ("--full", "--hooks")]
+        if not contract_args:
+            print("Usage: lg contract <file_or_component> [--full] [--json]")
             sys.exit(1)
-        target = args[1]
-        payload = {"action": "contract", "target": target, "cwd": cwd}
+        target = contract_args[0]
+        is_full = "--full" in args or "--hooks" in args
+        payload = {"action": "contract", "target": target, "cwd": cwd, "full": is_full}
         resp = send_request(payload)
         if is_json:
             print(json.dumps(resp or {"status": "error", "message": "Daemon error"}, indent=2))
             return
         if resp and resp.get("status") == "ok":
-            print(f"\n=== Public Contract: {resp.get('filepath')} [{resp.get('language')}] ===")
+            header = f"\n=== {'Full' if is_full else 'Public'} Contract: {resp.get('filepath')} [{resp.get('language')}] ==="
+            print(header)
             print("--------------------------------------------------")
             print(resp.get("contract", ""))
             print("--------------------------------------------------")

@@ -43,6 +43,37 @@ onMounted(() => {
         self.assertNotIn("onMounted", contract)
         self.assertNotIn("internal mounted implementation", contract)
 
+    def test_vue_contract_full_extraction(self):
+        vue_code = """
+<template>
+  <div><slot name="content" /></div>
+</template>
+<script setup lang="ts">
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
+
+const count = ref(0);
+const double = computed(() => count.value * 2);
+
+watch(count, (newVal) => {
+  console.log(newVal);
+});
+
+onMounted(() => {
+  fetchData();
+});
+onUnmounted(() => {
+  cleanup();
+});
+</script>
+        """
+        contract = extract_vue_contract(vue_code, full=True)
+        self.assertIn("count (ref)", contract)
+        self.assertIn("double (computed)", contract)
+        self.assertIn("Lifecycle Hooks:", contract)
+        self.assertIn("onMounted: calls [fetchData]", contract)
+        self.assertIn("onUnmounted", contract)
+        self.assertIn("Watchers: count", contract)
+
     def test_php_contract_extraction(self):
         php_code = """<?php
 namespace App\\Services;
@@ -62,6 +93,25 @@ class PaymentService implements PaymentInterface {
         self.assertIn("public function process(Order $order): bool", contract)
         self.assertNotIn("internalHelper", contract)
         self.assertNotIn("hidden", contract)
+
+    def test_php_contract_full_extraction(self):
+        php_code = """<?php
+namespace App\\Models;
+class Invoice extends Model {
+    use HasFactory, SoftDeletes;
+    protected $casts = ['is_paid' => 'boolean'];
+    protected $fillable = ['number', 'amount'];
+    public function markAsPaid(): bool { return true; }
+    protected function booted(): void {}
+}
+        """
+        contract = extract_php_contract(php_code, full=True)
+        self.assertIn("class Invoice", contract)
+        self.assertIn("use HasFactory, SoftDeletes;", contract)
+        self.assertIn("$casts", contract)
+        self.assertIn("$fillable", contract)
+        self.assertIn("public function markAsPaid(): bool", contract)
+        self.assertIn("protected function booted(): void", contract)
 
     def test_ts_contract_extraction(self):
         ts_code = """
