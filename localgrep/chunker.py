@@ -28,13 +28,73 @@ AST_BLOCK_TYPES = {
     # JS / TS / PHP
     "function_declaration", "method_declaration", "class_declaration",
     "interface_declaration", "arrow_function", "enum_declaration",
+    "lexical_declaration", "variable_declaration",
     # PHP specific
-    "trait_declaration",
+    "trait_declaration", "property_declaration", "const_declaration",
     # Go
-    "type_declaration",
+    "type_declaration", "function_declaration", "method_declaration",
     # Rust
-    "function_item", "impl_item", "trait_item", "struct_item", "enum_item",
+    "function_item", "impl_item", "trait_item", "struct_item", "enum_item", "const_item", "static_item",
 }
+
+def extract_symbol_name(node) -> str:
+    name_node = node.child_by_field_name("name")
+    if name_node:
+        return name_node.text.decode("utf-8", errors="ignore")
+
+    if node.type in ("lexical_declaration", "variable_declaration"):
+        for child in node.children:
+            if child.type == "variable_declarator":
+                vd_name = child.child_by_field_name("name")
+                if vd_name:
+                    return vd_name.text.decode("utf-8", errors="ignore")
+    elif node.type == "property_declaration":
+        for child in node.children:
+            if child.type == "property_element":
+                for sub in child.children:
+                    if sub.type == "variable_name":
+                        return sub.text.decode("utf-8", errors="ignore").lstrip("$")
+    elif node.type == "const_declaration":
+        for child in node.children:
+            if child.type == "const_element":
+                c_name = child.child_by_field_name("name")
+                if c_name:
+                    return c_name.text.decode("utf-8", errors="ignore")
+    return ""
+
+def extract_declaration_block(lines: List[str], start_idx: int, max_lines: int = 50) -> tuple:
+    """
+    Extracts a balanced syntactic block starting from start_idx up to semicolon or balanced braces.
+    Returns (1-indexed start_line, 1-indexed end_line, text).
+    """
+    n = len(lines)
+    end_idx = start_idx
+    brace_depth = 0
+    paren_depth = 0
+    saw_bracket = False
+
+    for i in range(start_idx, min(n, start_idx + max_lines)):
+        line = lines[i]
+        for ch in line:
+            if ch == '{':
+                brace_depth += 1
+                saw_bracket = True
+            elif ch == '}':
+                brace_depth -= 1
+            elif ch == '(':
+                paren_depth += 1
+                saw_bracket = True
+            elif ch == ')':
+                paren_depth -= 1
+
+        end_idx = i
+        if saw_bracket and brace_depth <= 0 and paren_depth <= 0:
+            break
+        if not saw_bracket and ';' in line:
+            break
+
+    block = "".join(lines[start_idx:end_idx + 1])
+    return start_idx + 1, end_idx + 1, block.strip()
 
 _PARSERS = {}
 
@@ -92,29 +152,14 @@ def chunk_vue_file(lines: List[str]) -> List[Dict[str, Any]]:
             try:
                 tree = parser.parse(script_code.encode('utf-8', errors='ignore'))
                 for node in tree.root_node.children:
-                    is_target = node.type in AST_BLOCK_TYPES
-                    # Also include multi-line lexical declarations (e.g. arrow function components / composables)
-                    if node.type == "lexical_declaration" and (node.end_point[0] - node.start_point[0] >= 1):
-                        is_target = True
-
-                    if is_target:
+                    if node.type in AST_BLOCK_TYPES:
                         s_row = node.start_point[0]
                         e_row = node.end_point[0]
                         c_lines = script_lines[s_row:e_row + 1]
                         if len(c_lines) > 75:
                             c_lines = c_lines[:75]
                             e_row = s_row + 74
-                        symbol_name = ""
-                        name_node = node.child_by_field_name("name")
-                        if name_node:
-                            symbol_name = name_node.text.decode("utf-8", errors="ignore")
-                        elif node.type == "lexical_declaration":
-                            for child in node.children:
-                                if child.type == "variable_declarator":
-                                    vd_name = child.child_by_field_name("name")
-                                    if vd_name:
-                                        symbol_name = vd_name.text.decode("utf-8", errors="ignore")
-                                        break
+                        symbol_name = extract_symbol_name(node)
                         chunks.append({
                             "start": start_line + s_row,
                             "end": start_line + e_row,
@@ -187,17 +232,7 @@ def chunk_file(filepath: str, lines: List[str]) -> List[Dict[str, Any]]:
                 if len(chunk_lines) > 75:
                     chunk_lines = chunk_lines[:75]
                     end_row = start_row + 74
-                symbol_name = ""
-                name_node = node.child_by_field_name("name")
-                if name_node:
-                    symbol_name = name_node.text.decode("utf-8", errors="ignore")
-                elif node.type == "lexical_declaration":
-                    for child in node.children:
-                        if child.type == "variable_declarator":
-                            vd_name = child.child_by_field_name("name")
-                            if vd_name:
-                                symbol_name = vd_name.text.decode("utf-8", errors="ignore")
-                                break
+                symbol_name = extract_symbol_name(node)
                 ast_chunks.append({
                     "start": start_row + 1,
                     "end": end_row + 1,

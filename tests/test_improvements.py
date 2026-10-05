@@ -117,5 +117,34 @@ const isBundle = computed(() => props.model?.type === 'bundle');
         self.assertIn("isBundle", res["computeds"])
         self.assertTrue(any("isBundle" in chain[1] for chain in res["flow_chains"]))
 
+    def test_extract_declaration_block(self):
+        from localgrep.chunker import extract_declaration_block
+        lines = [
+            "// A comment\n",
+            "const isVideoLastIndex = computed(() => !isEmpty(Settings?.product?.isVideoLastIndex) && Settings?.product?.isVideoLastIndex === true);\n",
+            "const otherVar = 1;\n"
+        ]
+        start_l, end_l, text = extract_declaration_block(lines, 1)
+        self.assertEqual(start_l, 2)
+        self.assertEqual(end_l, 2)
+        self.assertIn("isVideoLastIndex", text)
+
+    def test_vue_single_line_declaration_chunks(self):
+        from localgrep.chunker import chunk_vue_file
+        lines = [
+            "<template><div>{{ test }}</div></template>\n",
+            "<script setup>\n",
+            "import { computed } from 'vue';\n",
+            "const isVideoLastIndex = computed(() => true);\n",
+            "const galleryItems = computed(() => {\n",
+            "    return [1, 2, 3];\n",
+            "});\n",
+            "</script>\n"
+        ]
+        chunks = chunk_vue_file(lines)
+        names = [c.get("name") for c in chunks if c.get("name")]
+        self.assertIn("isVideoLastIndex", names)
+        self.assertIn("galleryItems", names)
+
 if __name__ == "__main__":
     unittest.main()

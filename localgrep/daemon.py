@@ -590,12 +590,12 @@ def get_candidates(query, cwd, top_k=3, max_candidates=50, search_dirs=None):
 
 def handle_prune(filepath, query, cwd, top_k=2):
     try:
-        from localgrep.chunker import chunk_file
+        from localgrep.chunker import chunk_file, extract_declaration_block
     except ImportError:
         try:
-            from .chunker import chunk_file
+            from .chunker import chunk_file, extract_declaration_block
         except ImportError:
-            from chunker import chunk_file
+            from chunker import chunk_file, extract_declaration_block
 
     full_path = os.path.join(cwd, filepath) if not os.path.isabs(filepath) else filepath
     if not os.path.exists(full_path):
@@ -622,7 +622,15 @@ def handle_prune(filepath, query, cwd, top_k=2):
     elif re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', clean_query):
         is_symbol_mode = True
 
-    # 1. Exact Identifier Short-Circuit Pass
+    # 1. Exact Identifier Short-Circuit Pass on AST Chunks
+    decl_regex = re.compile(
+        rf'(?:'
+        rf'\b(?:function|def|class|interface|trait|enum|const|let|var|val|fn|type)\s+(?:\$)?{re.escape(clean_query)}\b'
+        rf'|\b(?:public|protected|private|static)\s+(?:(?:readonly|static)\s+)*(?:[\w\?\|\[\]]+\s+)?\${re.escape(clean_query)}\b'
+        rf'|\b{re.escape(clean_query)}\s*[:=]\s*(?:ref|reactive|computed|shallowRef|\()'
+        rf')'
+    )
+
     exact_matches = []
     for c in chunks:
         c_name = c.get("name", "")
@@ -631,10 +639,8 @@ def handle_prune(filepath, query, cwd, top_k=2):
             matched = True
         elif c_name and is_symbol_mode and c_name.lower() == clean_query.lower():
             matched = True
-        elif is_symbol_mode:
-            decl_pattern = rf'\b(?:function|def|class|interface|trait|enum)\s+{re.escape(clean_query)}\b'
-            if re.search(decl_pattern, c["text"]):
-                matched = True
+        elif is_symbol_mode and decl_regex.search(c["text"]):
+            matched = True
 
         if matched:
             exact_matches.append({
@@ -649,6 +655,47 @@ def handle_prune(filepath, query, cwd, top_k=2):
 
     if exact_matches:
         return {"status": "ok", "results": exact_matches[:top_k]}
+
+    # 2. Raw Text Line Scan Fallback for Symbol Declarations
+    if is_symbol_mode:
+        for idx, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith(("//", "#", "/*", "*")):
+                continue
+            if decl_regex.search(line):
+                start_l, end_l, block_text = extract_declaration_block(lines, idx)
+                exact_matches.append({
+                    "score": 1000.0,
+                    "filepath": filepath,
+                    "name": clean_query,
+                    "start": start_l,
+                    "end": end_l,
+                    "snippet": block_text,
+                    "kind": "ast_declaration"
+                })
+                break
+
+    if exact_matches:
+        return {"status": "ok", "results": exact_matches[:top_k]}
+
+    # 3. Symbol Usages Fast-Path (Skip Heavy Cross-Encoder for Identifiers)
+    if is_symbol_mode:
+        usage_matches = []
+        sym_pattern = re.compile(rf'\b{re.escape(clean_query)}\b')
+        for c in chunks:
+            count = len(sym_pattern.findall(c["text"]))
+            if count > 0:
+                usage_matches.append({
+                    "score": 100.0 + count,
+                    "filepath": filepath,
+                    "name": c.get("name", clean_query),
+                    "start": c["start"],
+                    "end": c["end"],
+                    "snippet": c["text"].strip(),
+                    "kind": c.get("kind", "usage")
+                })
+        usage_matches.sort(key=lambda x: x["score"], reverse=True)
+        return {"status": "ok", "results": usage_matches[:top_k]}
 
     # 2. Semantic Cross-Encoder Ranking with AST Boost
     pairs = [[clean_query, c["text"]] for c in chunks]
