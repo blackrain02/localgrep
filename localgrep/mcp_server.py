@@ -66,6 +66,191 @@ def localgrep_prune(file_path: str, query: str, top_k: int = 2) -> str:
     return "\n".join(out)
 
 @app.tool()
+def localgrep_slice(file_path: str, symbol: str, path: str = ".") -> str:
+    """
+    Skeletonized File Context: Generates a compressed skeleton of a file around a target method.
+    Preserves imports, class properties, and reactive state while collapsing all non-target methods
+    into 1-line signature stubs. Expands the target method in full with exact 1-indexed line numbers.
+    Achieves 85% to 92% token reduction for large file editing tasks.
+    """
+    cwd = os.path.abspath(path)
+    payload = {"action": "slice", "file": file_path, "symbol": symbol, "cwd": cwd}
+    resp = send_request(payload)
+    if not resp or resp.get("status") != "ok":
+        return f"Error slicing {file_path}: {resp.get('message') if resp else 'Daemon error'}"
+
+    return (
+        f"=== Skeletonized Slice: {resp.get('filepath')} [{resp.get('symbol')}] (Saved {resp.get('saving_pct')}) ===\n"
+        f"{'-'*65}\n"
+        f"{resp.get('skeleton', '')}\n"
+        f"{'-'*65}\n"
+        f"Original: {resp.get('original_lines')} lines | Sliced: {resp.get('sliced_lines')} lines | Token reduction: {resp.get('saving_pct')}"
+    )
+
+@app.tool()
+def localgrep_lint_fast(file_path: str, path: str = ".") -> str:
+    """
+    Sub-20ms Pre-Flight Linter: Instant local verification before marking tasks complete.
+    Checks syntax errors (php -l / py_compile), unclosed Vue SFC template tags, and unimported classes.
+    """
+    cwd = os.path.abspath(path)
+    payload = {"action": "lint_fast", "file": file_path, "cwd": cwd}
+    resp = send_request(payload)
+    if not resp or resp.get("status") == "error" and not resp.get("issues"):
+        return f"Error running lint-fast on {file_path}: {resp.get('message') if resp else 'Daemon error'}"
+
+    if resp.get("status") == "clean":
+        return f"[OK] {resp.get('filepath')} is clean ({resp.get('elapsed_ms')}). Zero syntax issues."
+
+    out = [f"=== Lint Issues: {resp.get('filepath')} [{resp.get('status').upper()}] ({resp.get('elapsed_ms')}) ==="]
+    out.append("-" * 60)
+    for iss in resp.get("issues", []):
+        sev = iss.get("severity", "error").upper()
+        line = iss.get("line", 1)
+        msg = iss.get("message", "")
+        out.append(f"[{sev}] Line {line}: {msg}")
+    out.append("-" * 60)
+    return "\n".join(out)
+
+@app.tool()
+def localgrep_test_map(file_path: str, path: str = ".") -> str:
+    """
+    Targeted Test Selector: Maps any source file to its corresponding Pest or PHPUnit test files
+    across the root application or vendor/bina modules. Enables fast, targeted test verification.
+    """
+    cwd = os.path.abspath(path)
+    payload = {"action": "test_map", "file": file_path, "cwd": cwd}
+    resp = send_request(payload)
+    if not resp or resp.get("status") != "ok":
+        return f"Error mapping tests for {file_path}: {resp.get('message') if resp else 'Daemon error'}"
+
+    matched = resp.get("matched_tests", [])
+    if not matched:
+        return f"No direct test cases found mapping to: {file_path}"
+
+    out = [f"=== Mapped Tests for: {resp.get('filepath')} ==="]
+    for idx, t in enumerate(matched, start=1):
+        reasons = ", ".join(t.get("reasons", []))
+        out.append(f"{idx}. {t['test_file']} (score: {t['score']}) [{reasons}]")
+    return "\n".join(out)
+
+@app.tool()
+def localgrep_sample(target: str, path: str = ".") -> str:
+    """
+    Zero-Query Database Sample Peek: Retrieves 1 realistic, sanitized runtime record directly from
+    the local database (PostgreSQL/SQLite/MySQL) for an Eloquent model or table name, showing exact column types
+    and data formats without executing manual Tinker code.
+    """
+    cwd = os.path.abspath(path)
+    payload = {"action": "sample", "target": target, "cwd": cwd}
+    resp = send_request(payload)
+    if not resp:
+        return "Error: LocalGrep daemon unreachable."
+    if resp.get("status") != "ok":
+        return f"Error: {resp.get('message', 'Failed to retrieve sample record.')}"
+    try:
+        from localgrep.sample import format_sample_text
+    except ImportError:
+        from sample import format_sample_text
+    return format_sample_text(resp)
+
+@app.tool()
+def localgrep_impact(target: str, path: str = ".") -> str:
+    """
+    Blast Radius Engine: Computes downstream impact and blast radius before modifying or refactoring
+    a symbol, method, class, or file. Maps direct callers across Vue/TS and PHP, associated routes,
+    and affected Pest/PHPUnit test files with a risk assessment.
+    """
+    cwd = os.path.abspath(path)
+    payload = {"action": "impact", "target": target, "cwd": cwd}
+    resp = send_request(payload)
+    if not resp:
+        return "Error: LocalGrep daemon unreachable."
+    if resp.get("status") != "ok":
+        return f"Error: {resp.get('message', 'Failed to calculate blast radius.')}"
+    try:
+        from localgrep.impact import format_impact_text
+    except ImportError:
+        from impact import format_impact_text
+    return format_impact_text(resp)
+
+@app.tool()
+def localgrep_error_decode(error_or_log: str = "storage/logs/laravel.log", path: str = ".") -> str:
+    """
+    Intelligent Stack-Trace Distiller: Distills complex Laravel framework error dumps and 300-line stack traces
+    down to the innermost application frame, bound raw SQL queries, and the exact code context snippet.
+    """
+    cwd = os.path.abspath(path)
+    payload = {"action": "error_decode", "input": error_or_log, "cwd": cwd}
+    resp = send_request(payload)
+    if not resp:
+        return "Error: LocalGrep daemon unreachable."
+    if resp.get("status") != "ok":
+        return f"Error: {resp.get('message', 'Failed to decode error.')}"
+    try:
+        from localgrep.error_decode import format_error_decode_text
+    except ImportError:
+        from error_decode import format_error_decode_text
+    return format_error_decode_text(resp)
+
+@app.tool()
+def localgrep_env_audit(path: str = ".") -> str:
+    """
+    Configuration & Environment Validator: Audits .env variables against config files and database tables,
+    detecting missing credentials, disabled tables (e.g. Telescope/Pulse), and security misconfigurations.
+    """
+    cwd = os.path.abspath(path)
+    payload = {"action": "env_audit", "cwd": cwd}
+    resp = send_request(payload)
+    if not resp:
+        return "Error: LocalGrep daemon unreachable."
+    if resp.get("status") != "ok":
+        return f"Error: {resp.get('message', 'Failed to run env audit.')}"
+    try:
+        from localgrep.env_audit import format_env_audit_text
+    except ImportError:
+        from env_audit import format_env_audit_text
+    return format_env_audit_text(resp)
+
+@app.tool()
+def localgrep_state_map(component: str, path: str = ".") -> str:
+    """
+    Frontend Reactive Dependency Graph: Extracts an ASCII Directed Acyclic Graph (DAG) for Vue 3 SFCs,
+    mapping the causal flows between props, refs, computeds, watchers, and emits.
+    """
+    cwd = os.path.abspath(path)
+    payload = {"action": "state_map", "component": component, "cwd": cwd}
+    resp = send_request(payload)
+    if not resp:
+        return "Error: LocalGrep daemon unreachable."
+    if resp.get("status") != "ok":
+        return f"Error: {resp.get('message', 'Failed to generate state map.')}"
+    try:
+        from localgrep.state_map import format_state_map_text
+    except ImportError:
+        from state_map import format_state_map_text
+    return format_state_map_text(resp)
+
+@app.tool()
+def localgrep_api_shape(target: str, path: str = ".") -> str:
+    """
+    Full-Stack Contract Synthesizer: Synthesizes route definitions, controller methods, FormRequest
+    validation rules, Eloquent resource schemas, and Inertia components into a single card in <25ms.
+    """
+    cwd = os.path.abspath(path)
+    payload = {"action": "api_shape", "target": target, "cwd": cwd}
+    resp = send_request(payload)
+    if not resp:
+        return "Error: LocalGrep daemon unreachable."
+    if resp.get("status") != "ok":
+        return f"Error: {resp.get('message', 'Failed to synthesize API shape.')}"
+    try:
+        from localgrep.api_shape import format_api_shape_text
+    except ImportError:
+        from api_shape import format_api_shape_text
+    return format_api_shape_text(resp)
+
+@app.tool()
 def localgrep_test(query: str, path: str = ".", top_k: int = 3) -> str:
     """
     Find existing test cases (Pest, PHPUnit, Pytest, Jest) matching a feature or method.

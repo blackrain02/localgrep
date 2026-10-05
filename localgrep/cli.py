@@ -318,6 +318,15 @@ def main():
         print("  lg audit-diff [--staged] [--file <f>]      # Audit git diff for debug code, markers, secrets & lints")
         print("  lg test-isolate <cmd...> [--json]          # Run test command & distill failure noise to exact app frame")
         print("  lg prune <file> '<query>' [--json]         # Extract targeted function / code block from file")
+        print("  lg slice <file> '<symbol>' [--json]        # Skeletonized file context around target method (85%+ token cut)")
+        print("  lg lint-fast <file> [--json]               # Sub-20ms pre-flight linter (syntax, Vue tags, imports)")
+        print("  lg test-map <file> [--run] [--json]        # Targeted Pest/PHPUnit test selector & isolated runner")
+        print("  lg sample <Model|table> [--json]           # Peek 1 realistic runtime record from database")
+        print("  lg impact <symbol|file> [--json]           # Blast radius engine across PHP & Vue/TS")
+        print("  lg error-decode [log|stdin] [--json]       # Distill 300-line stack trace to innermost app frame & SQL")
+        print("  lg env-audit [--json]                      # Reconcile .env variables against config & database")
+        print("  lg state-map <component.vue> [--json]      # Frontend reactive dependency DAG (prop->computed->watch->emit)")
+        print("  lg api-shape <route|controller@method>     # Full-stack contract synthesis (FormRequest + Resource + Inertia)")
         print("  <cmd> | lg '<query>'                       # Filter long CLI outputs via pipe")
         print("  lg filter '<query>'                        # Filter stdin manually")
         print("  lg test '<query>' [--json]                 # Search test suite")
@@ -355,11 +364,15 @@ def main():
         return
 
     if cmd == "prune":
-        if len(args) < 3:
-            print("Usage: lg prune <file> '<query>' [--json]")
+        prune_args = [a for a in args[1:] if a not in ("--symbol", "-s")]
+        is_symbol = "--symbol" in args or "-s" in args
+        if len(prune_args) < 2:
+            print("Usage: lg prune <file> '<query>' [--symbol] [--json]")
             sys.exit(1)
-        filepath = args[1]
-        query = args[2]
+        filepath = prune_args[0]
+        query = prune_args[1]
+        if is_symbol:
+            query = f"--symbol {query}"
         payload = {"action": "prune", "file": filepath, "query": query, "cwd": cwd, "top_k": 2}
         resp = send_request(payload)
         if is_json:
@@ -369,6 +382,234 @@ def main():
             print_prune_results(filepath, query, resp.get("results", []))
         else:
             print(f"Error pruning {filepath}: {resp.get('message') if resp else 'Daemon error'}")
+        return
+
+    if cmd == "slice":
+        if len(args) < 3:
+            print("Usage: lg slice <file> '<symbol>' [--json]")
+            sys.exit(1)
+        filepath = args[1]
+        symbol = args[2]
+        payload = {"action": "slice", "file": filepath, "symbol": symbol, "cwd": cwd}
+        resp = send_request(payload)
+        if is_json:
+            print(json.dumps(resp or {"status": "error", "message": "Daemon error"}, indent=2))
+            return
+        if resp and resp.get("status") == "ok":
+            header = f"\n=== Skeletonized Slice: {resp.get('filepath')} [{resp.get('symbol')}] (Saved {resp.get('saving_pct')}) ==="
+            print(header)
+            print("-" * 65)
+            print(resp.get("skeleton", ""))
+            print("-" * 65)
+            print(f"Original: {resp.get('original_lines')} lines | Sliced: {resp.get('sliced_lines')} lines | Token reduction: {resp.get('saving_pct')}")
+        else:
+            print(f"Error slicing {filepath}: {resp.get('message') if resp else 'Daemon error'}")
+        return
+
+    if cmd in ("lint-fast", "lint"):
+        if len(args) < 2:
+            print("Usage: lg lint-fast <file> [--json]")
+            sys.exit(1)
+        filepath = args[1]
+        payload = {"action": "lint_fast", "file": filepath, "cwd": cwd}
+        resp = send_request(payload)
+        if is_json:
+            print(json.dumps(resp or {"status": "error", "message": "Daemon error"}, indent=2))
+            return
+        if resp and resp.get("status") == "clean":
+            print(f"\n[OK] {resp.get('filepath')} is clean ({resp.get('elapsed_ms')}). Zero syntax issues.")
+        elif resp and resp.get("issues"):
+            print(f"\n=== Lint Issues: {resp.get('filepath')} [{resp.get('status').upper()}] ({resp.get('elapsed_ms')}) ===")
+            print("-" * 65)
+            for iss in resp.get("issues", []):
+                sev = iss.get("severity", "error").upper()
+                line = iss.get("line", 1)
+                msg = iss.get("message", "")
+                print(f"[{sev}] Line {line}: {msg}")
+            print("-" * 65)
+        else:
+            print(f"Lint error: {resp.get('message') if resp else 'Daemon error'}")
+        return
+
+    if cmd == "test-map":
+        test_args = [a for a in args[1:] if a != "--run"]
+        if not test_args:
+            print("Usage: lg test-map <file> [--run] [--json]")
+            sys.exit(1)
+        filepath = test_args[0]
+        should_run = "--run" in args
+        payload = {"action": "test_map", "file": filepath, "cwd": cwd}
+        resp = send_request(payload)
+        if is_json and not should_run:
+            print(json.dumps(resp or {"status": "error", "message": "Daemon error"}, indent=2))
+            return
+        if not resp or resp.get("status") != "ok":
+            print(f"Error mapping tests for {filepath}: {resp.get('message') if resp else 'Daemon error'}")
+            return
+
+        matched = resp.get("matched_tests", [])
+        if not matched:
+            print(f"\nNo direct test cases found mapping to: {filepath}")
+            return
+
+        print(f"\n=== Mapped Tests for: {resp.get('filepath')} ===")
+        for idx, t in enumerate(matched, start=1):
+            reasons = ", ".join(t.get("reasons", []))
+            print(f"{idx}. {t['test_file']} (score: {t['score']}) [{reasons}]")
+
+        if should_run and matched:
+            top_test = matched[0]["test_file"]
+            print(f"\n--- Running Top Test: {top_test} ---")
+            try:
+                from localgrep.test_map import run_mapped_test
+            except ImportError:
+                from test_map import run_mapped_test
+            run_res = run_mapped_test(top_test, cwd)
+            if is_json:
+                print(json.dumps(run_res, indent=2))
+                return
+            if run_res.get("passed"):
+                print(f"[PASS] {top_test} passed successfully!")
+            else:
+                print(f"[FAIL] {top_test} failed:")
+                print(run_res.get("distilled_output", ""))
+        return
+
+    if cmd == "sample":
+        sample_args = [a for a in args[1:] if a != "--json"]
+        if not sample_args:
+            print("Usage: lg sample <Model | table> [--json]")
+            sys.exit(1)
+        target = sample_args[0]
+        payload = {"action": "sample", "target": target, "cwd": cwd}
+        resp = send_request(payload)
+        if is_json:
+            print(json.dumps(resp or {"status": "error", "message": "Daemon error"}, indent=2))
+        else:
+            if resp and resp.get("status") == "ok":
+                try:
+                    from localgrep.sample import format_sample_text
+                except ImportError:
+                    from sample import format_sample_text
+                print("\n" + format_sample_text(resp))
+            else:
+                msg = resp.get("message") if resp else "Daemon unreachable"
+                print(f"Error: {msg}")
+        return
+
+    if cmd == "impact":
+        impact_args = [a for a in args[1:] if a != "--json"]
+        if not impact_args:
+            print("Usage: lg impact <symbol | file> [--json]")
+            sys.exit(1)
+        target = impact_args[0]
+        payload = {"action": "impact", "target": target, "cwd": cwd}
+        resp = send_request(payload)
+        if is_json:
+            print(json.dumps(resp or {"status": "error", "message": "Daemon error"}, indent=2))
+        else:
+            if resp and resp.get("status") == "ok":
+                try:
+                    from localgrep.impact import format_impact_text
+                except ImportError:
+                    from impact import format_impact_text
+                print("\n" + format_impact_text(resp))
+            else:
+                msg = resp.get("message") if resp else "Daemon unreachable"
+                print(f"Error: {msg}")
+        return
+
+    if cmd == "error-decode":
+        raw_args = [a for a in args[1:] if a != "--json"]
+        raw_input = ""
+        if not sys.stdin.isatty():
+            raw_input = sys.stdin.read()
+        elif raw_args:
+            raw_input = " ".join(raw_args)
+        else:
+            # Default to storage/logs/laravel.log if exists
+            default_log = os.path.join(cwd, "storage/logs/laravel.log")
+            if os.path.isfile(default_log):
+                raw_input = default_log
+            else:
+                print("Usage: lg error-decode [log_file | 'error_text' | stdin] [--json]")
+                sys.exit(1)
+
+        payload = {"action": "error_decode", "input": raw_input, "cwd": cwd}
+        resp = send_request(payload)
+        if is_json:
+            print(json.dumps(resp or {"status": "error", "message": "Daemon error"}, indent=2))
+        else:
+            if resp and resp.get("status") == "ok":
+                try:
+                    from localgrep.error_decode import format_error_decode_text
+                except ImportError:
+                    from error_decode import format_error_decode_text
+                print("\n" + format_error_decode_text(resp))
+            else:
+                msg = resp.get("message") if resp else "Daemon unreachable"
+                print(f"Error: {msg}")
+        return
+
+    if cmd == "env-audit":
+        payload = {"action": "env_audit", "cwd": cwd}
+        resp = send_request(payload)
+        if is_json:
+            print(json.dumps(resp or {"status": "error", "message": "Daemon error"}, indent=2))
+        else:
+            if resp and resp.get("status") == "ok":
+                try:
+                    from localgrep.env_audit import format_env_audit_text
+                except ImportError:
+                    from env_audit import format_env_audit_text
+                print("\n" + format_env_audit_text(resp))
+            else:
+                msg = resp.get("message") if resp else "Daemon unreachable"
+                print(f"Error: {msg}")
+        return
+
+    if cmd == "state-map":
+        comp_args = [a for a in args[1:] if a != "--json"]
+        if not comp_args:
+            print("Usage: lg state-map <component.vue> [--json]")
+            sys.exit(1)
+        target = comp_args[0]
+        payload = {"action": "state_map", "component": target, "cwd": cwd}
+        resp = send_request(payload)
+        if is_json:
+            print(json.dumps(resp or {"status": "error", "message": "Daemon error"}, indent=2))
+        else:
+            if resp and resp.get("status") == "ok":
+                try:
+                    from localgrep.state_map import format_state_map_text
+                except ImportError:
+                    from state_map import format_state_map_text
+                print("\n" + format_state_map_text(resp))
+            else:
+                msg = resp.get("message") if resp else "Daemon unreachable"
+                print(f"Error: {msg}")
+        return
+
+    if cmd == "api-shape":
+        shape_args = [a for a in args[1:] if a != "--json"]
+        if not shape_args:
+            print("Usage: lg api-shape <route | controller@method> [--json]")
+            sys.exit(1)
+        target = shape_args[0]
+        payload = {"action": "api_shape", "target": target, "cwd": cwd}
+        resp = send_request(payload)
+        if is_json:
+            print(json.dumps(resp or {"status": "error", "message": "Daemon error"}, indent=2))
+        else:
+            if resp and resp.get("status") == "ok":
+                try:
+                    from localgrep.api_shape import format_api_shape_text
+                except ImportError:
+                    from api_shape import format_api_shape_text
+                print("\n" + format_api_shape_text(resp))
+            else:
+                msg = resp.get("message") if resp else "Daemon unreachable"
+                print(f"Error: {msg}")
         return
 
     if cmd == "test":

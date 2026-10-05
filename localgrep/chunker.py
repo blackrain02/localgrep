@@ -104,9 +104,21 @@ def chunk_vue_file(lines: List[str]) -> List[Dict[str, Any]]:
                         if len(c_lines) > 75:
                             c_lines = c_lines[:75]
                             e_row = s_row + 74
+                        symbol_name = ""
+                        name_node = node.child_by_field_name("name")
+                        if name_node:
+                            symbol_name = name_node.text.decode("utf-8", errors="ignore")
+                        elif node.type == "lexical_declaration":
+                            for child in node.children:
+                                if child.type == "variable_declarator":
+                                    vd_name = child.child_by_field_name("name")
+                                    if vd_name:
+                                        symbol_name = vd_name.text.decode("utf-8", errors="ignore")
+                                        break
                         chunks.append({
                             "start": start_line + s_row,
                             "end": start_line + e_row,
+                            "name": symbol_name,
                             "text": "".join(c_lines),
                             "kind": f"vue_{node.type}"
                         })
@@ -169,16 +181,27 @@ def chunk_file(filepath: str, lines: List[str]) -> List[Dict[str, Any]]:
         if node.type in AST_BLOCK_TYPES:
             start_row = node.start_point[0]
             end_row = node.end_point[0]
-            # Ensure meaningful size (at least 2 lines)
-            if end_row > start_row:
+            if end_row >= start_row:
                 chunk_lines = lines[start_row:end_row + 1]
                 # If a function is extremely huge (> 75 lines), slice the header/start
                 if len(chunk_lines) > 75:
                     chunk_lines = chunk_lines[:75]
                     end_row = start_row + 74
+                symbol_name = ""
+                name_node = node.child_by_field_name("name")
+                if name_node:
+                    symbol_name = name_node.text.decode("utf-8", errors="ignore")
+                elif node.type == "lexical_declaration":
+                    for child in node.children:
+                        if child.type == "variable_declarator":
+                            vd_name = child.child_by_field_name("name")
+                            if vd_name:
+                                symbol_name = vd_name.text.decode("utf-8", errors="ignore")
+                                break
                 ast_chunks.append({
                     "start": start_row + 1,
                     "end": end_row + 1,
+                    "name": symbol_name,
                     "text": "".join(chunk_lines),
                     "kind": f"ast_{node.type}"
                 })

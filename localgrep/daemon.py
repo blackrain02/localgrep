@@ -614,14 +614,64 @@ def handle_prune(filepath, query, cwd, top_k=2):
     if not chunks:
         return {"status": "ok", "results": []}
 
-    pairs = [[query, c["text"]] for c in chunks]
+    clean_query = query.strip()
+    is_symbol_mode = False
+    if clean_query.startswith("--symbol ") or clean_query.startswith("-s "):
+        clean_query = clean_query.split(None, 1)[1].strip().strip('"\'')
+        is_symbol_mode = True
+    elif re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', clean_query):
+        is_symbol_mode = True
+
+    # 1. Exact Identifier Short-Circuit Pass
+    exact_matches = []
+    for c in chunks:
+        c_name = c.get("name", "")
+        matched = False
+        if c_name and c_name == clean_query:
+            matched = True
+        elif c_name and is_symbol_mode and c_name.lower() == clean_query.lower():
+            matched = True
+        elif is_symbol_mode:
+            decl_pattern = rf'\b(?:function|def|class|interface|trait|enum)\s+{re.escape(clean_query)}\b'
+            if re.search(decl_pattern, c["text"]):
+                matched = True
+
+        if matched:
+            exact_matches.append({
+                "score": 1000.0,
+                "filepath": filepath,
+                "name": c_name or clean_query,
+                "start": c["start"],
+                "end": c["end"],
+                "snippet": c["text"].strip(),
+                "kind": c.get("kind", "ast_block")
+            })
+
+    if exact_matches:
+        return {"status": "ok", "results": exact_matches[:top_k]}
+
+    # 2. Semantic Cross-Encoder Ranking with AST Boost
+    pairs = [[clean_query, c["text"]] for c in chunks]
     logits = run_cross_encoder_inference(pairs, max_length=512)
 
     ranked = []
     for score, c in zip(logits, chunks):
+        c_name = c.get("name", "")
+        adjusted_score = float(score)
+
+        if c_name:
+            if clean_query.lower() in c_name.lower():
+                adjusted_score += 50.0
+            elif c_name.lower() in clean_query.lower():
+                adjusted_score += 25.0
+
+        if re.search(r'\b(return|throw)\b[^;]*;', c["text"]):
+            adjusted_score += 5.0
+
         ranked.append({
-            "score": score,
+            "score": round(adjusted_score, 2),
             "filepath": filepath,
+            "name": c_name,
             "start": c["start"],
             "end": c["end"],
             "snippet": c["text"].strip(),
@@ -794,6 +844,96 @@ def handle_client(conn):
             filepath = req.get("file", "")
             query = req.get("query", "")
             resp = handle_prune(filepath, query, cwd, top_k=top_k)
+        elif action == "slice":
+            filepath = req.get("file", "")
+            symbol = req.get("symbol", "")
+            try:
+                from localgrep.slice import extract_file_slice
+            except ImportError:
+                try:
+                    from .slice import extract_file_slice
+                except ImportError:
+                    from slice import extract_file_slice
+            resp = extract_file_slice(filepath, symbol, cwd)
+        elif action == "lint_fast":
+            filepath = req.get("file", "")
+            try:
+                from localgrep.lint_fast import lint_fast_file
+            except ImportError:
+                try:
+                    from .lint_fast import lint_fast_file
+                except ImportError:
+                    from lint_fast import lint_fast_file
+            resp = lint_fast_file(filepath, cwd)
+        elif action == "test_map":
+            filepath = req.get("file", "")
+            try:
+                from localgrep.test_map import map_test_for_file
+            except ImportError:
+                try:
+                    from .test_map import map_test_for_file
+                except ImportError:
+                    from test_map import map_test_for_file
+            resp = map_test_for_file(filepath, cwd)
+        elif action == "sample":
+            target = req.get("target", "")
+            try:
+                from localgrep.sample import get_sample_record
+            except ImportError:
+                try:
+                    from .sample import get_sample_record
+                except ImportError:
+                    from sample import get_sample_record
+            resp = get_sample_record(target, cwd)
+        elif action == "impact":
+            target = req.get("target", "")
+            try:
+                from localgrep.impact import calculate_impact
+            except ImportError:
+                try:
+                    from .impact import calculate_impact
+                except ImportError:
+                    from impact import calculate_impact
+            resp = calculate_impact(target, cwd)
+        elif action == "error_decode":
+            raw_input = req.get("input", "")
+            try:
+                from localgrep.error_decode import decode_error
+            except ImportError:
+                try:
+                    from .error_decode import decode_error
+                except ImportError:
+                    from error_decode import decode_error
+            resp = decode_error(raw_input, cwd)
+        elif action == "env_audit":
+            try:
+                from localgrep.env_audit import audit_environment
+            except ImportError:
+                try:
+                    from .env_audit import audit_environment
+                except ImportError:
+                    from env_audit import audit_environment
+            resp = audit_environment(cwd)
+        elif action == "state_map":
+            component = req.get("component", "")
+            try:
+                from localgrep.state_map import generate_state_map
+            except ImportError:
+                try:
+                    from .state_map import generate_state_map
+                except ImportError:
+                    from state_map import generate_state_map
+            resp = generate_state_map(component, cwd)
+        elif action == "api_shape":
+            target = req.get("target", "")
+            try:
+                from localgrep.api_shape import synthesize_api_shape
+            except ImportError:
+                try:
+                    from .api_shape import synthesize_api_shape
+                except ImportError:
+                    from api_shape import synthesize_api_shape
+            resp = synthesize_api_shape(target, cwd)
         elif action == "filter":
             text = req.get("text", "")
             query = req.get("query", "")
