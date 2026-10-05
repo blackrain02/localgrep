@@ -635,16 +635,21 @@ def handle_prune(filepath, query, cwd, top_k=2):
     for c in chunks:
         c_name = c.get("name", "")
         matched = False
+        score = 0.0
+
         if c_name and c_name == clean_query:
             matched = True
+            score = 2000.0 - min(500.0, (c["end"] - c["start"]) * 0.5)
         elif c_name and is_symbol_mode and c_name.lower() == clean_query.lower():
             matched = True
+            score = 1800.0 - min(500.0, (c["end"] - c["start"]) * 0.5)
         elif is_symbol_mode and decl_regex.search(c["text"]):
             matched = True
+            score = 1000.0 - min(500.0, (c["end"] - c["start"]) * 1.0)
 
         if matched:
             exact_matches.append({
-                "score": 1000.0,
+                "score": round(score, 2),
                 "filepath": filepath,
                 "name": c_name or clean_query,
                 "start": c["start"],
@@ -654,6 +659,7 @@ def handle_prune(filepath, query, cwd, top_k=2):
             })
 
     if exact_matches:
+        exact_matches.sort(key=lambda x: x["score"], reverse=True)
         return {"status": "ok", "results": exact_matches[:top_k]}
 
     # 2. Raw Text Line Scan Fallback for Symbol Declarations
