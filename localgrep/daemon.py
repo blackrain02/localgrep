@@ -1072,6 +1072,20 @@ def handle_client(conn):
                 except ImportError:
                     from verify_patch import verify_patch
             resp = verify_patch(file_path, target_content, cwd=cwd)
+        elif action == "patch":
+            file_path = req.get("file", "")
+            search_block = req.get("search", "")
+            replace_block = req.get("replace", "")
+            dry_run = req.get("dry_run", False)
+            force = req.get("force", False)
+            try:
+                from localgrep.patch import apply_patch
+            except ImportError:
+                try:
+                    from .patch import apply_patch
+                except ImportError:
+                    from patch import apply_patch
+            resp = apply_patch(file_path, search_block, replace_block, cwd=cwd, dry_run=dry_run, force=force)
         elif action == "audit_diff":
             staged = req.get("staged", False)
             file_path = req.get("file", None)

@@ -315,6 +315,7 @@ def main():
         print("  lg event-map [<filter>] [--json]           # Laravel Event -> Listener -> Queue -> Job map")
         print("  lg schema <Model> [--json]                 # Extract model table schema, columns, casts & relations")
         print("  lg verify-patch <file> [target] [--json]   # Pre-validate edit block, resolve StartLine/EndLine")
+        print("  lg patch <file> -s <old> -r <new> [--json] # Atomic fuzzy edit with auto-indent & syntax guard")
         print("  lg audit-diff [--staged] [--file <f>]      # Audit git diff for debug code, markers, secrets & lints")
         print("  lg test-isolate <cmd...> [--json]          # Run test command & distill failure noise to exact app frame")
         print("  lg prune <file> '<query>' [--json]         # Extract targeted function / code block from file")
@@ -789,6 +790,62 @@ def main():
             print(resp.get("card", ""))
         else:
             print("Verify patch error: Daemon error")
+        return
+
+    if cmd == "patch":
+        if len(args) < 2:
+            print("Usage: lg patch <file> --search <old> --replace <new> [--dry-run] [--force] [--json]")
+            sys.exit(1)
+        file_path = args[1]
+        search_block = ""
+        replace_block = ""
+        dry_run = "--dry-run" in sys.argv
+        force = "--force" in sys.argv
+
+        if "--search" in sys.argv:
+            s_idx = sys.argv.index("--search")
+            if s_idx + 1 < len(sys.argv):
+                search_block = sys.argv[s_idx + 1]
+        elif "-s" in sys.argv:
+            s_idx = sys.argv.index("-s")
+            if s_idx + 1 < len(sys.argv):
+                search_block = sys.argv[s_idx + 1]
+
+        if "--replace" in sys.argv:
+            r_idx = sys.argv.index("--replace")
+            if r_idx + 1 < len(sys.argv):
+                replace_block = sys.argv[r_idx + 1]
+        elif "-r" in sys.argv:
+            r_idx = sys.argv.index("-r")
+            if r_idx + 1 < len(sys.argv):
+                replace_block = sys.argv[r_idx + 1]
+
+        if not search_block:
+            print("Error: Search block is required via --search (or -s).")
+            sys.exit(1)
+
+        payload = {
+            "action": "patch",
+            "file": file_path,
+            "search": search_block,
+            "replace": replace_block,
+            "dry_run": dry_run,
+            "force": force,
+            "cwd": cwd
+        }
+        resp = send_request(payload)
+        if is_json:
+            print(json.dumps(resp or {"status": "error", "message": "Daemon error"}, indent=2))
+            return
+        if resp:
+            if resp.get("status") == "ok":
+                print(resp.get("card", "Patch applied successfully."))
+            else:
+                print(f"Error ({resp.get('status')}): {resp.get('message')}")
+                if resp.get("error_detail"):
+                    print(f"Details: {resp.get('error_detail')}")
+        else:
+            print("Patch error: Daemon error")
         return
 
     if cmd == "audit-diff":

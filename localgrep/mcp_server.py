@@ -443,6 +443,37 @@ def localgrep_verify_patch(file_path: str, target_content: str, path: str = ".")
     return resp.get("card", "")
 
 @app.tool()
+def localgrep_patch(file_path: str, search: str, replace: str, dry_run: bool = False, force: bool = False, path: str = ".") -> str:
+    """
+    Atomic Fuzzy File Patcher: Replaces search block with replace block in file.
+    Features:
+    - Whitespace & indentation agnostic matching (resolves tab vs space discrepancies).
+    - Automatically realigns the replacement block's indentation to match surrounding code.
+    - Pre-flight syntax validation with automatic rollback (aborts if replacement introduces syntax errors).
+    - Atomic file write to prevent corrupted states.
+    Set dry_run=True to preview changes without saving.
+    """
+    cwd = os.path.abspath(path)
+    payload = {
+        "action": "patch",
+        "file": file_path,
+        "search": search,
+        "replace": replace,
+        "dry_run": dry_run,
+        "force": force,
+        "cwd": cwd
+    }
+    resp = send_request(payload)
+    if not resp:
+        return "Patch error: Daemon error"
+    if resp.get("status") == "ok":
+        return resp.get("card", "Patch applied successfully.")
+    err_msg = f"Error ({resp.get('status')}): {resp.get('message')}"
+    if resp.get("error_detail"):
+        err_msg += f"\nDetails: {resp.get('error_detail')}"
+    return err_msg
+
+@app.tool()
 def localgrep_audit_diff(staged_only: bool = False, file: str = "", path: str = ".") -> str:
     """
     Git Diff Code Auditor: Audits current git diff for leftover debug calls (dd, dump, console.log),
