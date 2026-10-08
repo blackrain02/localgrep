@@ -191,5 +191,53 @@ const a = 1;
         # Check that it automatically indented the replacement to 12 spaces!
         self.assertIn("            value = 20\n            bonus = 5\n            return value + bonus", content)
 
+    def test_11_cli_search_and_replace_file(self):
+        import sys
+        code = "def greet():\n    msg = \"hello\"\n    return msg\n"
+        filepath = os.path.join(self.cwd, "greet.py")
+        sf_path = os.path.join(self.cwd, "search.txt")
+        rf_path = os.path.join(self.cwd, "replace.txt")
+        with open(filepath, "w") as f: f.write(code)
+        with open(sf_path, "w") as f: f.write("msg = \"hello\"")
+        with open(rf_path, "w") as f: f.write("msg = \"world\"")
+
+        cli_script = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "localgrep", "cli.py"))
+        cmd = [sys.executable, cli_script, "patch", filepath, "-sf", sf_path, "-rf", rf_path, "--json"]
+        res = subprocess.run(cmd, capture_output=True, text=True, cwd=self.cwd)
+        self.assertEqual(res.returncode, 0, msg=res.stderr)
+        with open(filepath, "r") as f:
+            updated = f.read()
+        self.assertIn("msg = \"world\"", updated)
+
+    def test_12_cli_json_input(self):
+        import sys, json
+        code = "def get_num():\n    return 42\n"
+        filepath = os.path.join(self.cwd, "num.py")
+        with open(filepath, "w") as f: f.write(code)
+
+        cli_script = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "localgrep", "cli.py"))
+        j_payload = json.dumps({"search": "return 42", "replace": "return 100"})
+        cmd = [sys.executable, cli_script, "patch", filepath, "-j", j_payload, "--json"]
+        res = subprocess.run(cmd, capture_output=True, text=True, cwd=self.cwd)
+        self.assertEqual(res.returncode, 0, msg=res.stderr)
+        with open(filepath, "r") as f:
+            updated = f.read()
+        self.assertIn("return 100", updated)
+
+    def test_13_cli_stdin_pipe(self):
+        import sys, json
+        code = "<?php\nfunction checkUser() {\n    $user = null;\n    return $user;\n}\n"
+        filepath = os.path.join(self.cwd, "user.php")
+        with open(filepath, "w") as f: f.write(code)
+
+        cli_script = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "localgrep", "cli.py"))
+        j_payload = json.dumps({"search": "$user = null;", "replace": "$user = Auth::user();"})
+        cmd = [sys.executable, cli_script, "patch", filepath, "--json"]
+        res = subprocess.run(cmd, input=j_payload, capture_output=True, text=True, cwd=self.cwd)
+        self.assertEqual(res.returncode, 0, msg=res.stderr)
+        with open(filepath, "r") as f:
+            updated = f.read()
+        self.assertIn("$user = Auth::user();", updated)
+
 if __name__ == "__main__":
     unittest.main()

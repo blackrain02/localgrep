@@ -315,7 +315,7 @@ def main():
         print("  lg event-map [<filter>] [--json]           # Laravel Event -> Listener -> Queue -> Job map")
         print("  lg schema <Model> [--json]                 # Extract model table schema, columns, casts & relations")
         print("  lg verify-patch <file> [target] [--json]   # Pre-validate edit block, resolve StartLine/EndLine")
-        print("  lg patch <file> -s <old> -r <new> [--json] # Atomic fuzzy edit with auto-indent & syntax guard")
+        print("  lg patch <file> [-s <old> -r <new>|-sf <f1> -rf <f2>|-j <json>] # Atomic edit with auto-indent, syntax guard & file/json/stdin")
         print("  lg audit-diff [--staged] [--file <f>]      # Audit git diff for debug code, markers, secrets & lints")
         print("  lg test-isolate <cmd...> [--json]          # Run test command & distill failure noise to exact app frame")
         print("  lg prune <file> '<query>' [--json]         # Extract targeted function / code block from file")
@@ -794,7 +794,7 @@ def main():
 
     if cmd == "patch":
         if len(args) < 2:
-            print("Usage: lg patch <file> --search <old> --replace <new> [--dry-run] [--force] [--json]")
+            print("Usage: lg patch <file> [-s <old> -r <new>] [-sf <file> -rf <file>] [-j <json>] [--stdin] [--dry-run] [--force] [--json]")
             sys.exit(1)
         file_path = args[1]
         search_block = ""
@@ -820,8 +820,84 @@ def main():
             if r_idx + 1 < len(sys.argv):
                 replace_block = sys.argv[r_idx + 1]
 
+        # File-based search/replace (-sf, --search-file, -rf, --replace-file)
+        if "--search-file" in sys.argv:
+            sf_idx = sys.argv.index("--search-file")
+            if sf_idx + 1 < len(sys.argv):
+                sf_path = sys.argv[sf_idx + 1]
+                if not os.path.exists(sf_path):
+                    print(f"Error: Search file not found: {sf_path}")
+                    sys.exit(1)
+                with open(sf_path, "r", encoding="utf-8", errors="ignore") as f:
+                    search_block = f.read()
+        elif "-sf" in sys.argv:
+            sf_idx = sys.argv.index("-sf")
+            if sf_idx + 1 < len(sys.argv):
+                sf_path = sys.argv[sf_idx + 1]
+                if not os.path.exists(sf_path):
+                    print(f"Error: Search file not found: {sf_path}")
+                    sys.exit(1)
+                with open(sf_path, "r", encoding="utf-8", errors="ignore") as f:
+                    search_block = f.read()
+
+        if "--replace-file" in sys.argv:
+            rf_idx = sys.argv.index("--replace-file")
+            if rf_idx + 1 < len(sys.argv):
+                rf_path = sys.argv[rf_idx + 1]
+                if not os.path.exists(rf_path):
+                    print(f"Error: Replace file not found: {rf_path}")
+                    sys.exit(1)
+                with open(rf_path, "r", encoding="utf-8", errors="ignore") as f:
+                    replace_block = f.read()
+        elif "-rf" in sys.argv:
+            rf_idx = sys.argv.index("-rf")
+            if rf_idx + 1 < len(sys.argv):
+                rf_path = sys.argv[rf_idx + 1]
+                if not os.path.exists(rf_path):
+                    print(f"Error: Replace file not found: {rf_path}")
+                    sys.exit(1)
+                with open(rf_path, "r", encoding="utf-8", errors="ignore") as f:
+                    replace_block = f.read()
+
+        # JSON input (-j, --json-input) or Stdin pipe
+        json_input = ""
+        if "--json-input" in sys.argv:
+            j_idx = sys.argv.index("--json-input")
+            if j_idx + 1 < len(sys.argv):
+                json_input = sys.argv[j_idx + 1]
+        elif "-j" in sys.argv:
+            j_idx = sys.argv.index("-j")
+            if j_idx + 1 < len(sys.argv):
+                json_input = sys.argv[j_idx + 1]
+        elif not json_input and ("--stdin" in sys.argv or not sys.stdin.isatty()):
+            try:
+                stdin_data = sys.stdin.read()
+                s_stripped = stdin_data.strip()
+                if s_stripped.startswith("{") and s_stripped.endswith("}"):
+                    json_input = s_stripped
+                elif search_block and not replace_block:
+                    replace_block = stdin_data
+                elif not search_block and not replace_block:
+                    json_input = s_stripped
+            except Exception:
+                pass
+
+        if json_input:
+            try:
+                j_data = json.loads(json_input)
+                if isinstance(j_data, dict):
+                    search_block = j_data.get("search", search_block)
+                    replace_block = j_data.get("replace", replace_block)
+                    if "dry_run" in j_data and not dry_run:
+                        dry_run = bool(j_data["dry_run"])
+                    if "force" in j_data and not force:
+                        force = bool(j_data["force"])
+            except Exception as e:
+                print(f"Error parsing JSON input: {e}")
+                sys.exit(1)
+
         if not search_block:
-            print("Error: Search block is required via --search (or -s).")
+            print("Error: Search block is required via --search (-s), --search-file (-sf), --json-input (-j), or stdin.")
             sys.exit(1)
 
         payload = {
