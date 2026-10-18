@@ -347,9 +347,9 @@ def main():
     # Explicit subcommands first
     if cmd in ("--version", "-v", "version"):
         if is_json:
-            print(json.dumps({"version": "0.8.0"}))
+            print(json.dumps({"version": "0.8.1"}))
         else:
-            print("LocalGrep v0.8.0")
+            print("LocalGrep v0.8.1")
         return
 
     if cmd == "stop":
