@@ -49,29 +49,35 @@ def is_application_frame(path: str) -> bool:
 
 def resolve_error_filepath(f_path: str, cwd: str) -> str:
     """Resolve absolute or partial relative path to an existing file in cwd."""
-    norm = f_path.strip().replace("\\", "/")
-    # 1. Direct absolute path
-    if os.path.isabs(norm):
-        if os.path.isfile(norm):
-            return norm
-        rel = os.path.relpath(norm, cwd)
-        cand = os.path.join(cwd, rel)
-        if os.path.isfile(cand):
-            return cand
+    norm = f_path.strip().replace("\\", "/").replace(r"\/", "/")
 
-    # 2. Direct relative path in cwd
-    direct = os.path.join(cwd, norm)
+    # 1. Direct absolute path if exists
+    if os.path.isabs(norm) and os.path.isfile(norm):
+        return norm
+
+    # 2. Relative to cwd if exists
+    direct = os.path.join(cwd, norm.lstrip("/"))
     if os.path.isfile(direct):
         return direct
 
-    # 3. Search for partial path (e.g. Drivers/Daric.php or Daric.php)
+    # 3. If absolute but inside cwd and exists
+    if os.path.isabs(norm):
+        try:
+            rel = os.path.relpath(norm, cwd)
+            cand = os.path.join(cwd, rel)
+            if os.path.isfile(cand):
+                return cand
+        except Exception:
+            pass
+
+    # 4. Search by subpath or basename across cwd
     target_base = os.path.basename(norm)
     for root, dirs, files in os.walk(cwd):
         dirs[:] = [d for d in dirs if d not in (".git", "node_modules", "storage", "dist", "public")]
         if target_base in files:
             full = os.path.join(root, target_base)
             full_norm = full.replace("\\", "/")
-            if norm in full_norm or full_norm.endswith(norm):
+            if norm in full_norm or full_norm.endswith(norm) or target_base == os.path.basename(full):
                 return full
 
     return direct
@@ -137,7 +143,9 @@ def extract_last_error_block(text: str) -> str:
     for idx, l in enumerate(lines):
         if re.search(r"\[\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}\].*?\.(ERROR|EMERGENCY|CRITICAL|ALERT):", l):
             start_indices.append(idx)
-        elif "Stack trace:" in l or "[stacktrace]" in l or "Fatal error:" in l or "Uncaught exception" in l:
+        elif re.search(r"\b(Fatal error|Uncaught exception|ErrorException)\b", l, re.I):
+            start_indices.append(idx)
+        elif "Stack trace:" in l or "[stacktrace]" in l:
             start_indices.append(max(0, idx - 1))
 
     if start_indices:
@@ -165,68 +173,107 @@ def decode_error(raw_input: str, cwd: str = ".") -> Dict[str, Any]:
     else:
         text_to_parse = clean_input
 
-    # 1. Extract Exception Type & Message
-    error_type = "Exception"
-    error_message = ""
-
-    # Check for inline location (e.g. at Drivers/Daric.php:101 or in Drivers/Daric.php on line 101)
-    m_inline = re.search(r'(?:in|at)\s+([^\s:]+\.(?:php|vue|ts|js|py)):?(\d+)?(?:\s+on\s+line\s+(\d+))?', text_to_parse, re.IGNORECASE)
+    # 1. Universal file & line extraction (supports JSON, PSR-3, inline, or unadorned file:line)
     inline_app_frame = None
-    if m_inline:
-        raw_p = m_inline.group(1).strip()
-        ln = int(m_inline.group(2) or m_inline.group(3) or 1)
-        resolved_p = resolve_error_filepath(raw_p, cwd)
-        rel_p = os.path.relpath(resolved_p, cwd) if os.path.isfile(resolved_p) else raw_p
+    raw_file = None
+    raw_line = 1
+
+    m_json_file = re.search(r'["\']file["\']\s*:\s*["\']([^"\']+\.(?:php|vue|ts|js|py))["\'].*?["\']line["\']\s*:\s*(\d+)', text_to_parse, re.I)
+    if not m_json_file:
+        m_json_file = re.search(r'["\']line["\']\s*:\s*(\d+).*?["\']file["\']\s*:\s*["\']([^"\']+\.(?:php|vue|ts|js|py))["\']', text_to_parse, re.I)
+
+    m_json_obj = re.search(r'\[object\]\s*\(([a-zA-Z0-9_\\]+)(?:\(code:\s*\d+\))?:\s*(.*?)\s+at\s+([^\)]+\.(?:php|vue|ts|js|py)):(\d+)\)', text_to_parse)
+    m_gen_file = re.search(r'(?:(?:in|at|\(|\b)\s*)?([A-Za-z0-9_\-\.\/\\~]+\.(?:php|vue|ts|js|py))(?::(\d+)|\s+on\s+line\s+(\d+)|\((\d+)\))', text_to_parse, re.I)
+
+    if m_json_file:
+        if m_json_file.group(1).isdigit():
+            raw_file, raw_line = m_json_file.group(2).strip(), int(m_json_file.group(1))
+        else:
+            raw_file, raw_line = m_json_file.group(1).strip(), int(m_json_file.group(2))
+    elif m_json_obj:
+        raw_file, raw_line = m_json_obj.group(3).strip(), int(m_json_obj.group(4))
+    elif m_gen_file:
+        raw_file = m_gen_file.group(1).strip()
+        raw_line = int(m_gen_file.group(2) or m_gen_file.group(3) or m_gen_file.group(4) or 1)
+
+    if raw_file:
+        resolved_p = resolve_error_filepath(raw_file, cwd)
+        rel_p = os.path.relpath(resolved_p, cwd) if os.path.isfile(resolved_p) else raw_file
         inline_app_frame = {
             "index": 0,
             "path": resolved_p,
-            "line": ln,
+            "line": raw_line,
             "call": "",
             "is_app": is_application_frame(rel_p),
             "rel_path": rel_p
         }
 
-    # Match JSON log: {"exception":"[object] (ClassName(code: 0): Message at /path:line)
-    m_json = re.search(r'\[object\]\s*\(([a-zA-Z0-9_\\]+)\(code:\s*\d+\):\s*(.*?)\s+at\s+([^\)]+):(\d+)\)', text_to_parse)
-    if m_json:
-        error_type = m_json.group(1)
-        error_message = m_json.group(2)
-    else:
-        # Match standard PHP fatal / uncaught: PHP Fatal error: Uncaught Error: Message
+    # 2. Universal Message & Type extraction
+    error_type = "Exception"
+    error_message = ""
+
+    # Check JSON structured exception / message
+    m_json_msg = re.search(r'["\']message["\']\s*:\s*["\']([^"\']+)["\']', text_to_parse)
+    m_json_class = re.search(r'["\']class["\']\s*:\s*["\']([^"\']+)["\']', text_to_parse)
+    if m_json_class:
+        error_type = m_json_class.group(1).split("\\")[-1]
+
+    if m_json_obj:
+        error_type = m_json_obj.group(1).split("\\")[-1]
+        if m_json_obj.group(2).strip():
+            error_message = m_json_obj.group(2).strip()
+    elif m_json_msg and m_json_msg.group(1).strip():
+        error_message = m_json_msg.group(1).strip()
+
+    # PHP Fatal error / Uncaught Error
+    if not error_message:
         m_fatal = re.search(r'PHP Fatal error:\s*(?:Uncaught\s+([A-Za-z0-9_\\]+(?:Exception|Error)):\s*)?(.*)', text_to_parse)
         if m_fatal:
-            error_type = m_fatal.group(1) or "FatalError"
-            error_message = m_fatal.group(2).strip()
-        else:
-            # Match standard: ClassName: Message
-            m_std = re.search(r'([A-Za-z0-9_\\]+(?:Exception|Error)):\s*(.*)', text_to_parse)
-            if m_std:
-                error_type = m_std.group(1)
-                error_message = m_std.group(2)
-            else:
-                # Match: local.ERROR: Message
-                m_log = re.search(r'\.(?:ERROR|EMERGENCY|CRITICAL):\s*([^{]+)', text_to_parse)
-                if m_log and m_log.group(1).strip():
-                    error_message = m_log.group(1).strip()
-                else:
-                    first_line = text_to_parse.split("\n")[0].strip()
-                    error_message = first_line[:120]
+            error_type = m_fatal.group(1).split("\\")[-1] if m_fatal.group(1) else "FatalError"
+            if m_fatal.group(2).strip():
+                error_message = m_fatal.group(2).strip()
 
-    # Clean up error message
+    # Standard Exception: Message
+    if not error_message:
+        m_std = re.search(r'([A-Za-z0-9_\\]+(?:Exception|Error)):\s*(.*)', text_to_parse)
+        if m_std:
+            error_type = m_std.group(1).split("\\")[-1]
+            if m_std.group(2).strip():
+                error_message = m_std.group(2).strip()
+
+    # Standard Laravel log level prefix (e.g. local.ERROR: Message)
+    if not error_message:
+        m_log = re.search(r'(?:\[\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}\]\s+)?(?:[a-zA-Z0-9_\-]+\.)?(?:ERROR|CRITICAL|EMERGENCY|ALERT):\s*([^\{\n]+)', text_to_parse)
+        if m_log and m_log.group(1).strip():
+            error_message = m_log.group(1).strip()
+
+    # Fallback to first non-empty line
+    if not error_message:
+        for line in text_to_parse.splitlines():
+            cl = line.strip()
+            if cl and not cl.startswith("#") and not cl.startswith("[stacktrace]"):
+                error_message = cl
+                break
+
+    # Clean up error_message
     if error_message:
-        # Strip trailing "at /path:123" or "in /path on line 123"
-        error_message = re.sub(r'\s+(?:in|at)\s+[^\s:]+\.(?:php|vue|ts|js|py)(?::\d+|\s+on\s+line\s+\d+)?.*$', '', error_message, flags=re.IGNORECASE).strip()
         # Strip leading timestamp and log level prefix
-        error_message = re.sub(r'^\[\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}\]\s+[a-zA-Z0-9_\-]+\.(?:ERROR|CRITICAL|EMERGENCY|ALERT):\s*', '', error_message).strip()
-        # If message was empty or ended up empty, fallback to first non-empty line
-        if not error_message:
-            for line in text_to_parse.splitlines():
-                cl = line.strip()
-                if cl and not cl.startswith("#") and not cl.startswith("[stacktrace]"):
-                    error_message = re.sub(r'\s+(?:in|at)\s+[^\s:]+\.(?:php|vue|ts|js|py).*$', '', cl).strip()
-                    break
+        error_message = re.sub(r'^\[\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}\]\s+[a-zA-Z0-9_\-]+\.(?:ERROR|CRITICAL|EMERGENCY|ALERT):\s*', '', error_message)
+        error_message = re.sub(r'^(?:[a-zA-Z0-9_\-]+\.)?(?:ERROR|CRITICAL|EMERGENCY|ALERT):\s*', '', error_message)
+        error_message = re.sub(r'^PHP Fatal error:\s*(?:Uncaught\s+[A-Za-z0-9_\\]+:\s*)?', '', error_message)
+        # Strip trailing file reference (with or without at/in, parens, colon, or line number)
+        error_message = re.sub(r'(?:\s+(?:in|at|\())?\s*[A-Za-z0-9_\-\.\/\\~]+\.(?:php|vue|ts|js|py)(?::\d+|\s+on\s+line\s+\d+|\(\d+\))?\)?\s*$', '', error_message, flags=re.I)
+        # Strip trailing punctuation/spaces
+        error_message = error_message.strip().rstrip(" :-.,")
 
-    # 2. Extract SQL & Bindings
+    if not error_message or error_message.lower() in ("at", "in"):
+        m_kw = re.search(r'((?:Undefined\s+(?:property|variable|index|offset|constant)|Call\s+to\s+undefined\s+(?:method|function)|Class\s+[\'"][^\'"]+[\'"]\s+not\s+found|syntax\s+error|Uncaught\s+[a-zA-Z0-9_\\]+)[^\n\(\{\:]*)', text_to_parse, re.I)
+        if m_kw:
+            error_message = m_kw.group(1).strip()
+        else:
+            error_message = f"{error_type} in {os.path.basename(raw_file)}" if raw_file else error_type
+
+    # 3. Extract SQL & Bindings
     sql_query = None
     m_sql = re.search(r'SQL:\s*(select|insert|update|delete|create|alter|drop)\s+(.*?)(?=\)\s*(?:\[bindings|\{|$)|\n|$)', text_to_parse, re.IGNORECASE)
     if not m_sql:
@@ -240,7 +287,7 @@ def decode_error(raw_input: str, cwd: str = ".") -> Dict[str, Any]:
         else:
             sql_query = raw_sql
 
-    # 3. Parse Stack Frames
+    # 4. Parse Stack Frames
     frames = []
     frame_matches = re.finditer(r'#(\d+)\s+([^\(\n]+)\((\d+)\):?\s*(.*)', text_to_parse)
     for fm in frame_matches:
@@ -267,17 +314,6 @@ def decode_error(raw_input: str, cwd: str = ".") -> Dict[str, Any]:
         innermost_app_frame = inline_app_frame
     elif app_frames:
         innermost_app_frame = app_frames[0]
-    elif m_json and is_application_frame(m_json.group(3)):
-        resolved_json_p = resolve_error_filepath(m_json.group(3), cwd)
-        rel_json_p = os.path.relpath(resolved_json_p, cwd) if os.path.isfile(resolved_json_p) else m_json.group(3)
-        innermost_app_frame = {
-            "index": 0,
-            "path": resolved_json_p,
-            "line": int(m_json.group(4)),
-            "call": "",
-            "is_app": True,
-            "rel_path": rel_json_p
-        }
     elif inline_app_frame:
         innermost_app_frame = inline_app_frame
     elif frames:
@@ -337,10 +373,9 @@ def format_error_decode_text(res: Dict[str, Any]) -> str:
                 lines.append(f"  {s}")
     elif frame:
         rel = frame.get("rel_path", frame.get("path"))
-        lines.append("Innermost App Frame: None (All frames vendor / framework)")
-        lines.append(f"  Framework Frame: -> {rel}:{frame['line']}")
+        lines.append(f"Innermost Framework Frame: -> {rel}:{frame['line']}")
     else:
-        lines.append("Innermost App Frame: None (All frames vendor / framework)")
+        lines.append("Innermost App Frame: None detected in error trace")
 
     tot = res.get("total_frames_count", 0)
     app_cnt = res.get("app_frames_count", 0)
