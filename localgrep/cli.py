@@ -332,7 +332,10 @@ def main():
         print("  lg filter '<query>'                        # Filter stdin manually")
         print("  lg test '<query>' [--json]                 # Search test suite")
         print("  lg error '<error/stacktrace>' [--json]     # Trace exception/error to source file")
-        print("  lg skill '<task/intent>' [--json]          # Semantic skill recommender for Claude / Antigravity")
+        print("  lg factory <Model> [--json]                # Extract model factory attributes and custom states")
+        print("  lg importgraph <file> [--json]             # Bidirectional AST import/export dependency graph")
+        print("  lg diff-context [--staged] [--file <f>]    # Contextual git diff with enclosing function headers")
+        print("  lg selftest [--json]                       # Built-in regression test suite across core commands")
         print("  lg status [--json]                         # Show daemon status, memory RSS, and backend")
         print("  lg stop                                    # Stop background daemon process")
         print("  lg mcp                                     # Launch Model Context Protocol (MCP) server")
@@ -965,6 +968,86 @@ def main():
             print(resp.get("card", ""))
         else:
             print("Test isolate error: Daemon error")
+        return
+
+    if cmd == "factory":
+        factory_args = [a for a in args[1:] if a != "--json"]
+        if not factory_args:
+            print("Usage: lg factory <Model> [--json]")
+            sys.exit(1)
+        model = factory_args[0]
+        payload = {"action": "factory", "model": model, "cwd": cwd}
+        resp = send_request(payload)
+        if is_json:
+            print(json.dumps(resp or {"status": "error", "message": "Daemon error"}, indent=2))
+        else:
+            if resp and resp.get("status") == "ok":
+                try:
+                    from localgrep.factory import format_factory_text
+                except ImportError:
+                    from factory import format_factory_text
+                print("\n" + format_factory_text(resp))
+            else:
+                msg = resp.get("message") if resp else "Daemon unreachable"
+                print(f"Error: {msg}")
+        return
+
+    if cmd == "importgraph":
+        ig_args = [a for a in args[1:] if a != "--json"]
+        if not ig_args:
+            print("Usage: lg importgraph <file> [--json]")
+            sys.exit(1)
+        target = ig_args[0]
+        payload = {"action": "importgraph", "target": target, "cwd": cwd}
+        resp = send_request(payload)
+        if is_json:
+            print(json.dumps(resp or {"status": "error", "message": "Daemon error"}, indent=2))
+        else:
+            if resp and resp.get("status") == "ok":
+                try:
+                    from localgrep.importgraph import format_importgraph_text
+                except ImportError:
+                    from importgraph import format_importgraph_text
+                print("\n" + format_importgraph_text(resp))
+            else:
+                msg = resp.get("message") if resp else "Daemon unreachable"
+                print(f"Error: {msg}")
+        return
+
+    if cmd == "diff-context":
+        staged = "--staged" in args
+        target_file = None
+        if "--file" in args:
+            idx = args.index("--file")
+            if idx + 1 < len(args):
+                target_file = args[idx + 1]
+
+        payload = {"action": "diff_context", "staged": staged, "file": target_file, "cwd": cwd}
+        resp = send_request(payload)
+        if is_json:
+            print(json.dumps(resp or {"status": "error", "message": "Daemon error"}, indent=2))
+        else:
+            if resp and resp.get("status") == "ok":
+                try:
+                    from localgrep.diff_context import format_diff_context_text
+                except ImportError:
+                    from diff_context import format_diff_context_text
+                print("\n" + format_diff_context_text(resp))
+            else:
+                msg = resp.get("message") if resp else "Daemon unreachable"
+                print(f"Error: {msg}")
+        return
+
+    if cmd == "selftest":
+        try:
+            from localgrep.selftest import run_selftest, format_selftest_text
+        except ImportError:
+            from selftest import run_selftest, format_selftest_text
+        resp = run_selftest(cwd)
+        if is_json:
+            print(json.dumps(resp, indent=2))
+        else:
+            print("\n" + format_selftest_text(resp))
         return
 
     if cmd == "filter":

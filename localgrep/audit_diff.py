@@ -44,6 +44,12 @@ def scan_lines_for_issues(lines: List[Tuple[int, str]], file_path: str) -> List[
         if not is_doc:
             # Check Debug Patterns
             for pat, desc, severity in DEBUG_PATTERNS:
+                if "PHP" in desc and not file_path.endswith((".php", ".blade.php")):
+                    continue
+                if "JavaScript" in desc and not file_path.endswith((".js", ".ts", ".vue", ".jsx", ".tsx")):
+                    continue
+                if "Python" in desc and not file_path.endswith((".py", ".pyw")):
+                    continue
                 if pat.search(stripped):
                     issues.append({
                         "file": file_path,

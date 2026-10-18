@@ -1064,6 +1064,46 @@ def handle_client(conn):
                 resp = run_test_isolate(cmd, cwd=cwd)
             else:
                 resp = {"status": "error", "message": "Neither output nor cmd provided for test_isolate"}
+        elif action == "factory":
+            model = req.get("model", "")
+            try:
+                from localgrep.factory import inspect_model_factory
+            except ImportError:
+                try:
+                    from .factory import inspect_model_factory
+                except ImportError:
+                    from factory import inspect_model_factory
+            resp = inspect_model_factory(model, cwd)
+        elif action == "importgraph":
+            target = req.get("target", "")
+            try:
+                from localgrep.importgraph import analyze_import_graph
+            except ImportError:
+                try:
+                    from .importgraph import analyze_import_graph
+                except ImportError:
+                    from importgraph import analyze_import_graph
+            resp = analyze_import_graph(target, cwd)
+        elif action == "diff_context":
+            staged = bool(req.get("staged", False))
+            target_file = req.get("file", None)
+            try:
+                from localgrep.diff_context import extract_diff_context
+            except ImportError:
+                try:
+                    from .diff_context import extract_diff_context
+                except ImportError:
+                    from diff_context import extract_diff_context
+            resp = extract_diff_context(cwd, staged=staged, target_file=target_file)
+        elif action == "selftest":
+            try:
+                from localgrep.selftest import run_selftest
+            except ImportError:
+                try:
+                    from .selftest import run_selftest
+                except ImportError:
+                    from selftest import run_selftest
+            resp = run_selftest(cwd)
         else:
             query = req.get("query", "")
             terms = extract_search_terms(query)

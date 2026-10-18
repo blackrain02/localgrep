@@ -508,6 +508,74 @@ def localgrep_test_isolate(test_command: str = "", raw_output: str = "", path: s
         return "Test isolate error: Daemon error"
     return resp.get("card", "")
 
+@app.tool()
+def localgrep_factory(model: str, path: str = ".") -> str:
+    """
+    Model Factory & State Inspector: Extracts default definition attributes and custom state modifiers
+    (e.g. unverified, admin) for a given Laravel model factory.
+    """
+    cwd = os.path.abspath(path)
+    payload = {"action": "factory", "model": model, "cwd": cwd}
+    resp = send_request(payload)
+    if not resp:
+        return "Error: LocalGrep daemon unreachable."
+    try:
+        from localgrep.factory import format_factory_text
+    except ImportError:
+        from factory import format_factory_text
+    return format_factory_text(resp)
+
+@app.tool()
+def localgrep_importgraph(target_file: str, path: str = ".") -> str:
+    """
+    Bidirectional Import Graph: Traces exports, dependencies, and inbound consumer components/classes
+    across Vue, TypeScript, JavaScript, and PHP files.
+    """
+    cwd = os.path.abspath(path)
+    payload = {"action": "importgraph", "target": target_file, "cwd": cwd}
+    resp = send_request(payload)
+    if not resp:
+        return "Error: LocalGrep daemon unreachable."
+    try:
+        from localgrep.importgraph import format_importgraph_text
+    except ImportError:
+        from importgraph import format_importgraph_text
+    return format_importgraph_text(resp)
+
+@app.tool()
+def localgrep_diff_context(staged_only: bool = False, file: str = "", path: str = ".") -> str:
+    """
+    Contextual Git Diff: Formats git diff hunks with their enclosing class, method, or function signatures.
+    """
+    cwd = os.path.abspath(path)
+    f_val = file if file else None
+    payload = {"action": "diff_context", "staged": staged_only, "file": f_val, "cwd": cwd}
+    resp = send_request(payload)
+    if not resp:
+        return "Error: LocalGrep daemon unreachable."
+    try:
+        from localgrep.diff_context import format_diff_context_text
+    except ImportError:
+        from diff_context import format_diff_context_text
+    return format_diff_context_text(resp)
+
+@app.tool()
+def localgrep_selftest(path: str = ".") -> str:
+    """
+    Regression Self-Test Suite: Runs automated verification of core LocalGrep commands
+    against live project benchmarks to ensure zero false positives or broken gates.
+    """
+    cwd = os.path.abspath(path)
+    payload = {"action": "selftest", "cwd": cwd}
+    resp = send_request(payload)
+    if not resp:
+        return "Error: LocalGrep daemon unreachable."
+    try:
+        from localgrep.selftest import format_selftest_text
+    except ImportError:
+        from selftest import format_selftest_text
+    return format_selftest_text(resp)
+
 def main():
     app.run("stdio")
 
