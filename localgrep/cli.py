@@ -535,13 +535,7 @@ def main():
         elif raw_args:
             raw_input = " ".join(raw_args)
         else:
-            # Default to storage/logs/laravel.log if exists
-            default_log = os.path.join(cwd, "storage/logs/laravel.log")
-            if os.path.isfile(default_log):
-                raw_input = default_log
-            else:
-                print("Usage: lg error-decode [log_file | 'error_text' | stdin] [--json]")
-                sys.exit(1)
+            raw_input = "log"
 
         payload = {"action": "error_decode", "input": raw_input, "cwd": cwd}
         resp = send_request(payload)

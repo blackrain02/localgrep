@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import glob
 from typing import Dict, Any, List, Optional, Tuple
 
 FRAMEWORK_VENDOR_PATTERNS = [
@@ -22,7 +23,14 @@ FRAMEWORK_VENDOR_PATTERNS = [
     r"vendor/psr/",
     r"vendor/vlucas/",
     r"vendor/nikic/",
-    r"vendor/tightenco/"
+    r"vendor/tightenco/",
+    r"vendor/nunomaduro/",
+    r"vendor/mockery/",
+    r"vendor/hamcrest/",
+    r"vendor/brick/",
+    r"vendor/psy/",
+    r"vendor/spatie/",
+    r"vendor/egulias/"
 ]
 
 def is_application_frame(path: str) -> bool:
@@ -37,6 +45,10 @@ def is_application_frame(path: str) -> bool:
         if re.search(pat, norm):
             return False
 
+    # Any other vendor package by default is non-application unless explicitly bina
+    if norm.startswith("vendor/") or "/vendor/" in norm:
+        return False
+
     # Root app code or modules
     if "Modules/" in norm or "/app/" in norm or norm.startswith("app/"):
         return True
@@ -44,6 +56,12 @@ def is_application_frame(path: str) -> bool:
         return True
     if "/resources/" in norm or norm.startswith("resources/"):
         return True
+    if "/config/" in norm or norm.startswith("config/"):
+        return True
+    if "/database/" in norm or norm.startswith("database/"):
+        return True
+    if "/public/" in norm or norm.startswith("public/"):
+        return False
 
     return True
 
@@ -72,13 +90,22 @@ def resolve_error_filepath(f_path: str, cwd: str) -> str:
 
     # 4. Search by subpath or basename across cwd
     target_base = os.path.basename(norm)
-    for root, dirs, files in os.walk(cwd):
-        dirs[:] = [d for d in dirs if d not in (".git", "node_modules", "storage", "dist", "public")]
-        if target_base in files:
-            full = os.path.join(root, target_base)
-            full_norm = full.replace("\\", "/")
-            if norm in full_norm or full_norm.endswith(norm) or target_base == os.path.basename(full):
-                return full
+    # Fast check known project root subtrees
+    for prefix in ("", "app", "vendor/bina", "resources", "routes"):
+        cand = os.path.join(cwd, prefix, norm.lstrip("/"))
+        if os.path.isfile(cand):
+            return cand
+
+    # Fast targeted glob search
+    for prefix in ("vendor/bina/*", "app", "resources"):
+        pattern = os.path.join(cwd, prefix, "**", target_base)
+        cands = glob.glob(pattern, recursive=True)
+        for c in cands:
+            c_norm = c.replace("\\", "/")
+            if norm in c_norm or c_norm.endswith(norm):
+                return c
+        if cands:
+            return cands[0]
 
     return direct
 
@@ -150,7 +177,13 @@ def extract_last_error_block(text: str) -> str:
 
     if start_indices:
         last_start = start_indices[-1]
-        return "\n".join(lines[last_start:])
+        # Find where this error entry ends: next log entry starting with timestamp
+        end_idx = len(lines)
+        for idx in range(last_start + 1, len(lines)):
+            if re.match(r"^\[\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}\]", lines[idx]):
+                end_idx = idx
+                break
+        return "\n".join(lines[last_start:end_idx])
 
     return "\n".join(lines[-150:])
 
@@ -158,22 +191,75 @@ def decode_error(raw_input: str, cwd: str = ".") -> Dict[str, Any]:
     """Parse log text or exception trace into structured, high-density summary."""
     clean_input = raw_input.strip()
 
-    # Check if input is a file path
-    target_file = os.path.join(cwd, clean_input) if not os.path.isabs(clean_input) else clean_input
-    if os.path.isfile(target_file):
+    # 1. Resolve log aliases or empty input to actual log file
+    target_file = None
+    if clean_input.lower() in ("", "log", "--log", "laravel.log", "laravel"):
+        default_log = os.path.join(cwd, "storage", "logs", "laravel.log")
+        if os.path.isfile(default_log):
+            target_file = default_log
+        else:
+            storage_logs = os.path.join(cwd, "storage", "logs")
+            if os.path.isdir(storage_logs):
+                logs = sorted(
+                    [os.path.join(storage_logs, f) for f in os.listdir(storage_logs) if f.endswith(".log")],
+                    key=os.path.getmtime,
+                    reverse=True
+                )
+                if logs:
+                    target_file = logs[0]
+        if not target_file:
+            return {
+                "status": "error",
+                "message": f"Log file not found at '{default_log}'. Ensure Laravel log exists or specify error text directly."
+            }
+    else:
+        # Check if clean_input points to an existing file
+        cand_path = os.path.join(cwd, clean_input) if not os.path.isabs(clean_input) else clean_input
+        if os.path.isfile(cand_path):
+            target_file = cand_path
+        elif clean_input.endswith(".log") or clean_input.startswith("storage/"):
+            return {
+                "status": "error",
+                "message": f"Specified log file not found: '{clean_input}'"
+            }
+
+    # 2. Read file or use input directly
+    if target_file:
         try:
             with open(target_file, "r", encoding="utf-8", errors="ignore") as f:
                 f.seek(0, os.SEEK_END)
                 size = f.tell()
-                f.seek(max(0, size - 32768))
+                f.seek(max(0, size - 65536))
                 content = f.read()
             text_to_parse = extract_last_error_block(content)
+            if not text_to_parse.strip():
+                return {
+                    "status": "error",
+                    "message": f"No error entries found in log file '{target_file}'."
+                }
         except Exception as e:
             return {"status": "error", "message": f"Could not read log file: {str(e)}"}
     else:
         text_to_parse = clean_input
 
-    # 1. Universal file & line extraction (supports JSON, PSR-3, inline, or unadorned file:line)
+    # 3. Pre-flight validation: verify input contains recognized error patterns
+    has_error_structure = (
+        bool(re.search(r'\b[A-Za-z0-9_\\]*(?:Exception|Error)\b', text_to_parse)) or
+        bool(re.search(r'\.(?:php|vue|ts|js|py)(?::\d+|\s+on\s+line\s+\d+|\(\d+\))', text_to_parse, re.I)) or
+        bool(re.search(r'#\d+\s+|(?:Stack trace:|\[stacktrace\]|\bthrown in\b)', text_to_parse, re.I)) or
+        bool(re.search(r'\.(?:ERROR|CRITICAL|EMERGENCY|ALERT|WARNING):\s*', text_to_parse)) or
+        bool(re.search(r'\b(Fatal error|Uncaught|Undefined property|Undefined variable|Undefined index|Undefined constant|Undefined array key|Call to undefined|syntax error|Parse error|SQLSTATE|QueryException)\b', text_to_parse, re.I)) or
+        bool(re.search(r'\[object\]\s*\([A-Za-z0-9_\\]+', text_to_parse))
+    )
+
+    if not has_error_structure:
+        clean_preview = clean_input.replace("\n", " ")[:60]
+        return {
+            "status": "error",
+            "message": f"Input does not appear to contain a recognized error, stack trace, or log entry: '{clean_preview}'"
+        }
+
+    # 4. Universal file & line extraction (supports JSON, PSR-3, inline, or unadorned file:line)
     inline_app_frame = None
     raw_file = None
     raw_line = 1
@@ -208,7 +294,7 @@ def decode_error(raw_input: str, cwd: str = ".") -> Dict[str, Any]:
             "rel_path": rel_p
         }
 
-    # 2. Universal Message & Type extraction
+    # 5. Universal Message & Type extraction
     error_type = "Exception"
     error_message = ""
 
@@ -235,7 +321,7 @@ def decode_error(raw_input: str, cwd: str = ".") -> Dict[str, Any]:
 
     # Standard Exception: Message
     if not error_message:
-        m_std = re.search(r'([A-Za-z0-9_\\]+(?:Exception|Error)):\s*(.*)', text_to_parse)
+        m_std = re.search(r'\b([A-Za-z0-9_\\]+(?:Exception|Error)):\s*(.*)', text_to_parse)
         if m_std:
             error_type = m_std.group(1).split("\\")[-1]
             if m_std.group(2).strip():
@@ -246,6 +332,12 @@ def decode_error(raw_input: str, cwd: str = ".") -> Dict[str, Any]:
         m_log = re.search(r'(?:\[\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}\]\s+)?(?:[a-zA-Z0-9_\-]+\.)?(?:ERROR|CRITICAL|EMERGENCY|ALERT):\s*([^\{\n]+)', text_to_parse)
         if m_log and m_log.group(1).strip():
             error_message = m_log.group(1).strip()
+
+    # PHP Error phrases (e.g. Undefined property: ...)
+    if not error_message:
+        m_php_err = re.search(r'\b(Undefined\s+(?:property|variable|index|offset|constant|array\s+key)|Call\s+to\s+undefined\s+(?:method|function)|Class\s+[\'"][^\'"]+[\'"]\s+not\s+found|syntax\s+error[^\n:]*|Uncaught\s+[a-zA-Z0-9_\\]+)\b:?\s*([^\n]+)', text_to_parse, re.I)
+        if m_php_err:
+            error_message = f"{m_php_err.group(1)}: {m_php_err.group(2)}".strip()
 
     # Fallback to first non-empty line
     if not error_message:
@@ -261,24 +353,37 @@ def decode_error(raw_input: str, cwd: str = ".") -> Dict[str, Any]:
         error_message = re.sub(r'^\[\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}\]\s+[a-zA-Z0-9_\-]+\.(?:ERROR|CRITICAL|EMERGENCY|ALERT):\s*', '', error_message)
         error_message = re.sub(r'^(?:[a-zA-Z0-9_\-]+\.)?(?:ERROR|CRITICAL|EMERGENCY|ALERT):\s*', '', error_message)
         error_message = re.sub(r'^PHP Fatal error:\s*(?:Uncaught\s+[A-Za-z0-9_\\]+:\s*)?', '', error_message)
-        # Strip trailing file reference (with or without at/in, parens, colon, or line number)
-        error_message = re.sub(r'(?:\s+(?:in|at|\())?\s*[A-Za-z0-9_\-\.\/\\~]+\.(?:php|vue|ts|js|py)(?::\d+|\s+on\s+line\s+\d+|\(\d+\))?\)?\s*$', '', error_message, flags=re.I)
-        # Strip trailing punctuation/spaces
+        # Strip trailing file reference (with in/at/parens or colon line number)
+        error_message = re.sub(r'\s+(?:in|at|\()\s+[A-Za-z0-9_\-\.\/\\~]+\.(?:php|vue|ts|js|py)(?::\d+|\s+on\s+line\s+\d+|\(\d+\))?\)?\s*$', '', error_message, flags=re.I)
+        error_message = re.sub(r'\s+[A-Za-z0-9_\-\.\/\\~]+\.(?:php|vue|ts|js|py)(?::\d+|\s+on\s+line\s+\d+|\(\d+\))\)?\s*$', '', error_message, flags=re.I)
         error_message = error_message.strip().rstrip(" :-.,")
 
+    # Refine error_type if it is still generic Exception
+    if error_type == "Exception":
+        if "Undefined" in error_message:
+            error_type = "ErrorException"
+        elif "Call to undefined" in error_message:
+            error_type = "BadMethodCallException"
+        elif "Class" in error_message and "not found" in error_message:
+            error_type = "ClassNotFoundException"
+        elif "syntax error" in error_message.lower():
+            error_type = "ParseError"
+        elif "SQLSTATE" in error_message or "QueryException" in error_message:
+            error_type = "QueryException"
+
     if not error_message or error_message.lower() in ("at", "in"):
-        m_kw = re.search(r'((?:Undefined\s+(?:property|variable|index|offset|constant)|Call\s+to\s+undefined\s+(?:method|function)|Class\s+[\'"][^\'"]+[\'"]\s+not\s+found|syntax\s+error|Uncaught\s+[a-zA-Z0-9_\\]+)[^\n\(\{\:]*)', text_to_parse, re.I)
-        if m_kw:
-            error_message = m_kw.group(1).strip()
+        if raw_file:
+            error_message = f"{error_type} in {os.path.basename(raw_file)}:{raw_line}"
         else:
-            error_message = f"{error_type} in {os.path.basename(raw_file)}" if raw_file else error_type
+            clean_preview = clean_input.replace("\n", " ")[:60]
+            return {
+                "status": "error",
+                "message": f"Could not determine error message from input: '{clean_preview}'"
+            }
 
-    # 3. Extract SQL & Bindings
+    # 6. Extract SQL & Bindings (strict matching only, avoiding English false positives)
     sql_query = None
-    m_sql = re.search(r'SQL:\s*(select|insert|update|delete|create|alter|drop)\s+(.*?)(?=\)\s*(?:\[bindings|\{|$)|\n|$)', text_to_parse, re.IGNORECASE)
-    if not m_sql:
-        m_sql = re.search(r'(select|insert|update|delete|create|alter|drop)\s+([^\n;]+)', text_to_parse, re.IGNORECASE)
-
+    m_sql = re.search(r'(?:SQL:\s*|\[SQL\]\s*|\(SQL:\s*)(select|insert|update|delete|create\s+table|alter\s+table|drop\s+table)\s+(.*?)(?=\)\s*(?:\[bindings|\{|$)|\n|$)', text_to_parse, re.IGNORECASE)
     if m_sql:
         raw_sql = f"{m_sql.group(1)} {m_sql.group(2)}".strip()
         m_bind = re.search(r'\[bindings:\s*(\[[^\]]*\])\]', text_to_parse)
@@ -286,8 +391,14 @@ def decode_error(raw_input: str, cwd: str = ".") -> Dict[str, Any]:
             sql_query = bind_sql_parameters(raw_sql, m_bind.group(1))
         else:
             sql_query = raw_sql
+    else:
+        m_sql_strict = re.search(r'\b(select\s+.+?\s+from\s+[^\n;]+|insert\s+into\s+[^\n;]+|update\s+[^\n;]+\s+set\s+[^\n;]+|delete\s+from\s+[^\n;]+|create\s+table\s+[^\n;]+|alter\s+table\s+[^\n;]+|drop\s+table\s+[^\n;]+)', text_to_parse, re.IGNORECASE)
+        if m_sql_strict:
+            raw_sql = m_sql_strict.group(1).strip()
+            if "{" not in raw_sql and 'logger' not in raw_sql.lower():
+                sql_query = raw_sql
 
-    # 4. Parse Stack Frames
+    # 7. Parse Stack Frames
     frames = []
     frame_matches = re.finditer(r'#(\d+)\s+([^\(\n]+)\((\d+)\):?\s*(.*)', text_to_parse)
     for fm in frame_matches:
@@ -328,13 +439,16 @@ def decode_error(raw_input: str, cwd: str = ".") -> Dict[str, Any]:
             innermost_app_frame["rel_path"] = os.path.relpath(full_f_path, cwd) if os.path.isfile(full_f_path) else innermost_app_frame.get("rel_path")
         innermost_app_frame["snippet"] = extract_code_snippet(full_f_path, innermost_app_frame["line"])
 
+    total_frames = len(frames) + (1 if inline_app_frame and not frames else 0)
+    app_count = len(app_frames) + (1 if inline_app_frame and inline_app_frame["is_app"] and not app_frames else 0)
+
     return {
         "status": "ok",
         "error_type": error_type,
         "message": error_message,
         "innermost_frame": innermost_app_frame,
-        "app_frames_count": len(app_frames) + (1 if inline_app_frame and inline_app_frame["is_app"] and not app_frames else 0),
-        "total_frames_count": len(frames) + (1 if inline_app_frame and not frames else 0),
+        "app_frames_count": app_count,
+        "total_frames_count": total_frames,
         "sql_query": sql_query
     }
 
