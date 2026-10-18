@@ -30,9 +30,6 @@ RUNTIME_DIR = get_runtime_dir()
 SOCKET_PATH = os.path.join(RUNTIME_DIR, "daemon.sock")
 PID_FILE = os.path.join(RUNTIME_DIR, "daemon.pid")
 LOG_FILE = os.path.join(RUNTIME_DIR, "daemon.log")
-DEFAULT_ONNX_PATH = os.path.join(RUNTIME_DIR, "model.onnx")
-MODEL_NAME = "cross-encoder/ms-marco-MiniLM-L-6-v2"
-
 STOP_WORDS = {
     "where", "what", "which", "when", "how", "who", "whom", "this", "that",
     "there", "here", "with", "from", "have", "been", "does", "checked",
@@ -43,13 +40,9 @@ STOP_WORDS = {
 
 GENERIC_TERMS = {
     "product", "products", "item", "items", "data", "value", "values",
-    "model", "models", "user", "users"
+    "model", "models", "user", "users", "order", "orders", "table", "record", "records", "entity", "entities"
 }
 
-tokenizer = None
-onnx_session = None
-torch_model = None
-sess_inputs = set()
 start_time = time.time()
 _pid_file_fd = None
 
@@ -77,106 +70,6 @@ def get_rss_mb():
         pass
     return None
 
-def init_model():
-    global tokenizer, onnx_session, torch_model, sess_inputs
-    from transformers import AutoTokenizer, logging
-    logging.set_verbosity_error()
-    warnings.filterwarnings("ignore")
-
-    token = os.environ.get("HF_TOKEN")
-    try:
-        tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, token=token, local_files_only=True)
-    except Exception:
-        tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, token=token)
-
-    # 1. Check local ONNX model paths
-    pkg_onnx = os.path.join(os.path.dirname(__file__), "model.onnx")
-    onnx_file = pkg_onnx if os.path.exists(pkg_onnx) else (DEFAULT_ONNX_PATH if os.path.exists(DEFAULT_ONNX_PATH) else None)
-
-    # 2. If ONNX model is missing on disk, download the official ONNX model from Hugging Face
-    if not onnx_file:
-        try:
-            from huggingface_hub import hf_hub_download
-            onnx_file = hf_hub_download(repo_id=MODEL_NAME, filename="onnx/model.onnx", token=token)
-        except Exception:
-            onnx_file = None
-
-    if onnx_file and os.path.exists(onnx_file):
-        try:
-            import onnxruntime as ort
-            sess_opts = ort.SessionOptions()
-            # Disable memory arena and pattern caching to prevent unbounded RSS growth
-            sess_opts.enable_cpu_mem_arena = False
-            sess_opts.enable_mem_pattern = False
-            sess_opts.intra_op_num_threads = min(4, os.cpu_count() or 1)
-            onnx_session = ort.InferenceSession(onnx_file, sess_opts, providers=['CPUExecutionProvider'])
-            sess_inputs = {i.name for i in onnx_session.get_inputs()}
-
-            # Warmup with dynamic input keys (handling input_ids, attention_mask, token_type_ids)
-            dummy = tokenizer([["warmup", "test"]], padding=True, truncation=True, return_tensors='np')
-            feed = {k: v for k, v in dummy.items() if k in sess_inputs}
-            _ = onnx_session.run(["logits"], feed)
-            del dummy, feed
-            import gc
-            gc.collect()
-            return
-        except Exception:
-            onnx_session = None
-
-    # 3. Fallback to PyTorch
-    try:
-        import torch
-        from transformers import AutoModelForSequenceClassification
-        torch_model = AutoModelForSequenceClassification.from_pretrained(MODEL_NAME, token=token)
-        torch_model.eval()
-        dummy = tokenizer([["warmup", "test"]], padding=True, truncation=True, return_tensors='pt')
-        with torch.no_grad():
-            _ = torch_model(**dummy)
-        del dummy
-        import gc
-        gc.collect()
-    except ImportError:
-        raise RuntimeError(
-            "LocalGrep requires either onnxruntime with model.onnx (recommended) or PyTorch ('pip install torch'). "
-            "Neither ONNX session could be loaded nor PyTorch was found."
-        )
-
-def run_cross_encoder_inference(pairs, max_length=256):
-    global onnx_session, tokenizer, sess_inputs, torch_model
-    if not pairs:
-        return []
-
-    batch_size = 16
-    all_logits = []
-
-    if onnx_session is not None:
-        if not sess_inputs:
-            sess_inputs = {i.name for i in onnx_session.get_inputs()}
-
-        for i in range(0, len(pairs), batch_size):
-            batch_pairs = pairs[i:i + batch_size]
-            enc = tokenizer(batch_pairs, padding=True, truncation=True, return_tensors='np', max_length=max_length)
-            feed = {k: v for k, v in enc.items() if k in sess_inputs}
-            out = onnx_session.run(["logits"], feed)[0]
-            all_logits.extend(out.flatten().tolist())
-            del enc, feed, out
-
-        import gc
-        gc.collect()
-        return all_logits
-
-    import torch
-    for i in range(0, len(pairs), batch_size):
-        batch_pairs = pairs[i:i + batch_size]
-        inputs = tokenizer(batch_pairs, padding=True, truncation=True, return_tensors='pt', max_length=max_length)
-        with torch.no_grad():
-            logits = torch_model(**inputs).logits.view(-1).float().tolist()
-            all_logits.extend(logits)
-        del inputs
-
-    import gc
-    gc.collect()
-    return all_logits
 
 def stem_word(word: str) -> list[str]:
     w = word.lower()
@@ -339,40 +232,60 @@ def extract_meaningful_file_snippet(full_path, terms, max_lines=12):
     except Exception:
         return "", 1
 
-def compute_file_path_score(filepath, terms, query):
+
+def compute_file_path_score(filepath, terms, query, is_symbol_intent=False, is_test_search=False):
     base = os.path.splitext(os.path.basename(filepath))[0].lower()
     f_lower = filepath.lower()
     q_compact = query.lower().replace(" ", "").replace("-", "").replace("_", "")
 
     score = 0.0
-    # Exact or near-exact basename matches
     if q_compact and q_compact == base:
-        score += 20.0
+        score += 60.0
+    elif q_compact and (base == q_compact + "controller" or base == q_compact + "service" or base == q_compact + "model"):
+        score += 40.0
     elif q_compact and q_compact in base:
-        score += 15.0
+        score += 15.0 if not is_symbol_intent else 10.0
     elif terms and all(t in base for t in terms):
-        score += 12.0
-    else:
+        score += 25.0
+    elif not is_symbol_intent:
         score += sum(3.5 for t in terms if t in base)
 
-    # General path matches
-    score += sum(1.0 for t in terms if t in f_lower)
+    if not is_symbol_intent:
+        score += sum(1.0 for t in terms if t in f_lower)
+    else:
+        if q_compact and q_compact in f_lower:
+            score += 10.0
+        elif terms and all(t in f_lower for t in terms):
+            score += 8.0
 
-    # Noise dampening
+    if "controller" in f_lower:
+        score += 10.0
+    elif any(k in f_lower for k in ("action", "handler", "service", "model")):
+        score += 5.0
+
+    if any(k in f_lower for k in ("report", "export", "import", "migration", "seeder", "database/factories")):
+        if not any(k in query.lower() for k in ("report", "export", "import", "migration", "seed", "factory")):
+            score -= 25.0
+
     if "/lang/" in f_lower or "/locales/" in f_lower:
-        score -= 15.0
-    if filepath.endswith(".json") or filepath.endswith(".lock"):
-        score -= 6.0
-    if "/tests/" in f_lower or "/test/" in f_lower:
-        score -= 4.0
+        score -= 30.0
+    if filepath.endswith(".json") or filepath.endswith(".lock") or filepath.endswith(".md"):
+        if not query.lower().endswith(".md") and not query.lower().endswith(".json"):
+            score -= 25.0
+    if not is_test_search:
+        if "/tests/" in f_lower or "/test/" in f_lower:
+            if not any(k in query.lower() for k in ("test", "spec")):
+                score -= 30.0
+    else:
+        if "test" in f_lower:
+            score += 15.0
 
-    # Code extension preference
     if any(filepath.endswith(ext) for ext in (".vue", ".php", ".ts", ".js", ".py")):
         score += 2.0
 
     return score
 
-def get_candidates(query, cwd, top_k=3, max_candidates=50, search_dirs=None):
+def get_candidates(query, cwd, top_k=3, max_candidates=50, search_dirs=None, is_test_search=False):
     terms = extract_search_terms(query)
     if not terms:
         return []
@@ -380,18 +293,15 @@ def get_candidates(query, cwd, top_k=3, max_candidates=50, search_dirs=None):
     expanded = expand_search_terms(terms, max_terms=12)
     candidates = {}
 
-    # Detect symbol / component intent for Tier 1 Fast-Path
     q_clean = query.strip()
-    is_single_ident = bool(re.match(r'^[A-Za-z0-9_\-\.]+$', q_clean))
-    is_camel_pascal = bool(re.search(r'[a-z][A-Z]', q_clean))
+    is_single_ident = bool(re.match(r"^[A-Za-z0-9_\-\.]+$", q_clean))
+    is_camel_pascal = bool(re.search(r"[a-z][A-Z]", q_clean))
     is_symbol_intent = is_single_ident or is_camel_pascal or (
-        len(terms) <= 2 and not any(w in q_clean.lower() for w in ("how", "what", "where", "why", "logic", "explain", "bug", "recalculates"))
+        len(terms) <= 2 and not any(w in q_clean.lower() for w in ("how", "what", "where", "why", "logic", "explain", "bug", "recalculates", "flow"))
     )
 
     if not search_dirs:
         target_candidates = ["resources", "app", "routes", "config", "src", "packages", "lib", "Modules"]
-
-        # Dynamic discovery for modular monorepos (e.g. Laravel Modules via config/modules.php)
         modules_cfg = os.path.join(cwd, "config", "modules.php")
         if os.path.isfile(modules_cfg):
             try:
@@ -404,15 +314,6 @@ def get_candidates(query, cwd, top_k=3, max_candidates=50, search_dirs=None):
                         target_candidates.append(custom_module_path)
             except Exception:
                 pass
-
-        # Environment variable override for arbitrary monorepo structures
-        env_extra_dirs = os.environ.get("LOCALGREP_DIRS")
-        if env_extra_dirs:
-            for d in env_extra_dirs.split(","):
-                d_clean = d.strip()
-                if d_clean and d_clean not in target_candidates:
-                    target_candidates.append(d_clean)
-
         target_dirs = [d for d in target_candidates if os.path.isdir(os.path.join(cwd, d))]
         search_dirs = target_dirs if target_dirs else ["."]
 
@@ -425,41 +326,31 @@ def get_candidates(query, cwd, top_k=3, max_candidates=50, search_dirs=None):
         "--glob", "!graphify-out/**",
         "--glob", "!resources/views/vendor/**",
         "--glob", "!**/prompts/**",
+        "--glob", "!resources/js/ziggy*.js",
+        "--glob", "!**/ziggy.js",
+        "--glob", "!**/ziggy.d.ts",
         "--glob", "!*.lock"
     ]
-    if "." in search_dirs:
-        globs += ["--glob", "!vendor/**"]
-    if not search_dirs or "tests" not in search_dirs:
-        globs += ["--glob", "!tests/**"]
-
-    # Dampen translation / dictionary noise unless explicitly queried
+    if not is_test_search:
+        if "." in search_dirs:
+            globs += ["--glob", "!vendor/**"]
+        if not search_dirs or "tests" not in search_dirs:
+            globs += ["--glob", "!tests/**"]
     if not any(k in query.lower() for k in ("lang", "translation", "locale", "dictionary")):
-        globs += [
-            "--glob", "!**/lang/**",
-            "--glob", "!**/locales/**",
-            "--glob", "!lang/**",
-            "--glob", "!locales/**",
-        ]
+        globs += ["--glob", "!**/lang/**", "--glob", "!**/locales/**", "--glob", "!lang/**", "--glob", "!locales/**"]
 
-    # 1. Path-based search (Always executed to discover primary component & class files)
+    # Path search
     try:
-        res_files = subprocess.run(
-            ["rg", "--files"] + globs + search_dirs,
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            check=False
-        )
+        res_files = subprocess.run(["rg", "--files"] + globs + search_dirs, cwd=cwd, capture_output=True, text=True, check=False)
         if res_files.stdout:
             file_lines = [f.strip() for f in res_files.stdout.strip().split("\n") if f.strip()]
             scored_files = []
             for f in file_lines:
-                ps = compute_file_path_score(f, terms, query)
-                if ps > 2.0:
+                ps = compute_file_path_score(f, terms, query, is_symbol_intent=is_symbol_intent, is_test_search=is_test_search)
+                if ps > (15.0 if is_symbol_intent else 2.0):
                     scored_files.append((ps, f))
             scored_files.sort(key=lambda x: x[0], reverse=True)
-
-            for ps, filepath in scored_files[:15]:
+            for ps, filepath in scored_files[:20]:
                 full_path = os.path.join(cwd, filepath)
                 snippet, best_line = extract_meaningful_file_snippet(full_path, terms)
                 if snippet:
@@ -474,13 +365,26 @@ def get_candidates(query, cwd, top_k=3, max_candidates=50, search_dirs=None):
     except Exception:
         pass
 
-    # 2. Content-based search with ripgrep
+    # Content search
     try:
-        regex_pattern = "|".join(expanded[:8])
-        cmd = [
-            "rg", "-i", "-n", "-C", "3", "--max-count", "10"
-        ] + globs + ["-e", regex_pattern] + search_dirs
+        variants = [q_clean]
+        if is_single_ident:
+            if is_camel_pascal:
+                snake = re.sub(r"([a-z])([A-Z])", r"\1_\2", q_clean).lower()
+                variants.append(snake)
+            if "_" in q_clean:
+                pascal = "".join(w.capitalize() for w in q_clean.split("_"))
+                variants.append(pascal)
+            regex_pattern = r"\b(" + "|".join(re.escape(v) for v in variants) + r")\b"
+        else:
+            specific_terms = [t for t in terms if t not in GENERIC_TERMS]
+            if specific_terms:
+                specific_expanded = expand_search_terms(specific_terms, max_terms=8)
+                regex_pattern = "|".join(specific_expanded)
+            else:
+                regex_pattern = "|".join(expanded[:8])
 
+        cmd = ["rg", "-H", "-i", "-n", "-C", "3", "--max-count", "100"] + globs + ["-e", regex_pattern] + search_dirs
         res = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, check=False)
         blocks = res.stdout.strip().split("\n--\n") if res.stdout else []
 
@@ -489,30 +393,86 @@ def get_candidates(query, cwd, top_k=3, max_candidates=50, search_dirs=None):
             lines = block.strip().split("\n")
             if not lines:
                 continue
-            first_line = lines[0]
-            parts = first_line.split(":", 2) if ":" in first_line else first_line.split("-", 2)
-            filepath = parts[0].strip() if len(parts) > 0 else ""
-            lineno = parts[1].strip() if len(parts) > 1 else "1"
-            snippet = "\n".join(lines[:7])
 
+            filepath = ""
+            matching_lineno = None
+            clean_lines = []
+            for l in lines:
+                m = re.match(r'^([^:\-]+)[:\-]([0-9]+)[:\-](.*)$', l)
+                if m:
+                    f, ln, code = m.group(1), m.group(2), m.group(3)
+                    if not filepath:
+                        filepath = f
+                    if ':' in l and matching_lineno is None:
+                        matching_lineno = ln
+                    clean_lines.append(code)
+                else:
+                    clean_lines.append(l)
+
+            if not filepath:
+                continue
+
+            lineno = matching_lineno or "1"
+            snippet = "\n".join(clean_lines[:10])
             text_lower = (filepath + " " + snippet).lower()
-            score = sum(3 for t in terms if t in text_lower) + sum(1 for t in expanded if t in text_lower)
 
-            # Declaration boost
-            decl_keywords = ("class ", "function ", "interface ", "trait ", "const ", "export ", "<template", "<script")
-            if any(dk in snippet for dk in decl_keywords):
+            matched_terms = [t for t in terms if t in text_lower]
+            n_matched = len(matched_terms)
+            total_terms = len(terms)
+
+            if total_terms >= 2 and n_matched < 2 and query.lower() not in text_lower:
+                continue
+
+            score = 0.0
+            if total_terms > 1:
+                if n_matched == total_terms:
+                    score += 65.0
+                elif n_matched >= 3:
+                    score += 50.0
+                elif n_matched == 2:
+                    score += 15.0
+            else:
+                score += 20.0
+
+            for t in terms:
+                count = text_lower.count(t)
+                score += min(count, 5) * 2.0
+            for t in expanded:
+                if t not in terms and t in text_lower:
+                    score += 1.0
+
+            # Direct Declaration Boost
+            for t in terms:
+                if re.search(rf"\b(class|trait|interface|enum)\s+{re.escape(t)}\b", snippet, re.I):
+                    score += 50.0
+                elif re.search(rf"\b(class|trait|interface|enum)\s+[A-Za-z0-9_]*{re.escape(t)}", snippet, re.I):
+                    score += 20.0
+
+                if re.search(rf"\b(function|def)\s+{re.escape(t)}\b", snippet, re.I):
+                    score += 40.0
+                elif re.search(rf"\b(function|def)\s+[A-Za-z0-9_]*{re.escape(t)}", snippet, re.I):
+                    score += 20.0
+
+            if any(k in snippet for k in ("public function ", "function ", "class ", "interface ", "trait ", "def ", "<template", "<script")):
+                score += 5.0
+            if any(k in snippet for k in ("return ", "throw ", "emit(", "dispatch(", "->save()", "->update(")):
                 score += 3.0
+            if any(filepath.endswith(ext) for ext in (".php", ".vue", ".ts", ".js", ".py")):
+                score += 2.0
+            if query.lower() in text_lower:
+                score += 30.0
+            if is_test_search:
+                if re.search(r'\b(it|test)\s*\(|function\s+test_', snippet):
+                    score += 40.0
 
-            if any(filepath.endswith(ext) for ext in (".php", ".ts", ".vue", ".js", ".py")):
-                score += 1.0
             scored_blocks.append((score, filepath, lineno, snippet))
 
         scored_blocks.sort(key=lambda x: x[0], reverse=True)
 
-        for score, filepath, lineno, snippet in scored_blocks:
+        for score, filepath, lineno, snippet in scored_blocks[:max_candidates]:
             if filepath and snippet:
                 key = (filepath, lineno)
-                p_bonus = compute_file_path_score(filepath, terms, query)
+                p_bonus = compute_file_path_score(filepath, terms, query, is_symbol_intent=is_symbol_intent)
                 if key in candidates:
                     candidates[key]["content_score"] = max(candidates[key]["content_score"], score)
                     candidates[key]["snippet"] = snippet
@@ -532,58 +492,29 @@ def get_candidates(query, cwd, top_k=3, max_candidates=50, search_dirs=None):
     if not cand_list:
         return []
 
-    # Tier 1: Fast-Path for symbol / component lookups (< 15ms)
-    if is_symbol_intent:
-        top_path_bonus = max((c.get("path_bonus", 0.0) for c in cand_list), default=0.0)
-        top_content_score = max((c.get("content_score", 0.0) for c in cand_list), default=0.0)
-
-        # If strong symbol or path matches exist, rank directly and bypass ONNX
-        if top_path_bonus >= 8.0 or top_content_score >= 8.0:
-            fast_ranked = []
-            for c in cand_list:
-                total = c.get("path_bonus", 0.0) * 1.5 + c.get("content_score", 0.0)
-                content_lower = (c["filepath"] + " " + c["snippet"]).lower()
-                matched_count = sum(1 for t in terms if t in content_lower)
-                total += matched_count * 2.0
-                if any(c["filepath"].endswith(ext) for ext in (".vue", ".php", ".ts", ".js", ".py")):
-                    total += 1.0
-                fast_ranked.append({
-                    "score": round(total, 3),
-                    "filepath": c["filepath"],
-                    "lineno": c["lineno"],
-                    "snippet": c["snippet"]
-                })
-            fast_ranked.sort(key=lambda x: x["score"], reverse=True)
-            return fast_ranked[:top_k]
-
-    # Tier 2: Neural Semantic Search (Bounded to top 12 candidates to guarantee < 250ms)
-    def initial_ranking_key(c):
-        return c.get("path_bonus", 0.0) + c.get("content_score", 0.0)
-
-    cand_list.sort(key=initial_ranking_key, reverse=True)
-    bounded_candidates = cand_list[:12]
-
-    pairs = [[query, f"File: {c['filepath']}\n{c['snippet']}"] for c in bounded_candidates]
-    logits = run_cross_encoder_inference(pairs, max_length=256)
-
     ranked = []
-    for score, cand in zip(logits, bounded_candidates):
-        total_score = score + (cand["path_bonus"] * 0.8)
-        content_lower = (cand["filepath"] + " " + cand["snippet"]).lower()
+    for c in cand_list:
+        total = c.get("path_bonus", 0.0) + c.get("content_score", 0.0)
+        content_lower = (c["filepath"] + " " + c["snippet"]).lower()
         matched_count = sum(1 for t in terms if t in content_lower)
-        total_score += matched_count * 2.0
-        if any(cand["filepath"].endswith(ext) for ext in (".php", ".ts", ".vue", ".js", ".py")):
-            total_score += 1.0
-        ranked.append({
-            "score": round(total_score, 3),
-            "filepath": cand["filepath"],
-            "lineno": cand["lineno"],
-            "snippet": cand["snippet"]
-        })
 
-    del pairs, cand_list, bounded_candidates, logits
-    import gc
-    gc.collect()
+        if is_single_ident:
+            has_symbol = any(re.search(rf"\b{re.escape(v)}\b", content_lower) for v in variants)
+            has_all_terms = terms and all(t in content_lower for t in terms)
+            if not (has_symbol or has_all_terms or c.get("path_bonus", 0.0) >= 30.0):
+                continue
+        elif len(terms) >= 2 and matched_count < 2 and c.get("path_bonus", 0.0) < 15.0:
+            continue
+
+        if total < 10.0:
+            continue
+
+        ranked.append({
+            "score": round(total, 2),
+            "filepath": c["filepath"],
+            "lineno": c["lineno"],
+            "snippet": c["snippet"][:120].replace("\n", " ")
+        })
 
     ranked.sort(key=lambda x: x["score"], reverse=True)
     return ranked[:top_k]
@@ -703,78 +634,93 @@ def handle_prune(filepath, query, cwd, top_k=2):
         usage_matches.sort(key=lambda x: x["score"], reverse=True)
         return {"status": "ok", "results": usage_matches[:top_k]}
 
-    # 2. Semantic Cross-Encoder Ranking with AST Boost
-    pairs = [[clean_query, c["text"]] for c in chunks]
-    logits = run_cross_encoder_inference(pairs, max_length=512)
-
+        # 4. Deterministic AST & Lexical Multi-Term Ranking
+    terms = extract_search_terms(clean_query)
     ranked = []
-    for score, c in zip(logits, chunks):
+    for c in chunks:
         c_name = c.get("name", "")
-        adjusted_score = float(score)
+        text_lower = c["text"].lower()
+        score = 0.0
 
         if c_name:
             if clean_query.lower() in c_name.lower():
-                adjusted_score += 50.0
+                score += 60.0
             elif c_name.lower() in clean_query.lower():
-                adjusted_score += 25.0
+                score += 30.0
+            for t in terms:
+                if t in c_name.lower():
+                    score += 25.0
+
+        matched_terms = [t for t in terms if t in text_lower]
+        if terms:
+            if len(matched_terms) == len(terms):
+                score += 40.0
+            elif len(matched_terms) >= 2:
+                score += 20.0
+            elif len(matched_terms) == 1:
+                score += 5.0
+            for t in terms:
+                score += min(text_lower.count(t), 5) * 2.0
 
         if re.search(r'\b(return|throw)\b[^;]*;', c["text"]):
-            adjusted_score += 5.0
+            score += 5.0
 
-        ranked.append({
-            "score": round(adjusted_score, 2),
-            "filepath": filepath,
-            "name": c_name,
-            "start": c["start"],
-            "end": c["end"],
-            "snippet": c["text"].strip(),
-            "kind": c.get("kind", "snippet")
-        })
-
-    del pairs, chunks, logits
-    import gc
-    gc.collect()
+        if score > 0:
+            ranked.append({
+                "score": round(score, 2),
+                "filepath": filepath,
+                "name": c_name or clean_query,
+                "start": c["start"],
+                "end": c["end"],
+                "snippet": c["text"].strip(),
+                "kind": c.get("kind", "ast_block")
+            })
 
     ranked.sort(key=lambda x: x["score"], reverse=True)
     return {"status": "ok", "results": ranked[:top_k]}
 
 def handle_filter(text, query, top_k=5):
-    raw_lines = [l.strip() for l in text.split("\n") if l.strip()]
+    raw_lines = [l.strip() for l in text.splitlines() if l.strip()]
     if not raw_lines:
         return {"status": "ok", "results": []}
 
     terms = extract_search_terms(query)
-    candidates = raw_lines
-    if len(raw_lines) > 50 and terms:
-        filtered = [l for l in raw_lines if any(t in l.lower() for t in terms)]
-        if len(filtered) >= top_k:
-            candidates = filtered[:50]
-        else:
-            candidates = (filtered + [l for l in raw_lines if l not in filtered])[:50]
-    elif len(raw_lines) > 50:
-        candidates = raw_lines[:50]
-
-    pairs = [[query, line] for line in candidates]
-    logits = run_cross_encoder_inference(pairs, max_length=256)
+    q_lower = query.lower().strip()
 
     ranked = []
-    for score, line in zip(logits, candidates):
-        ranked.append({
-            "score": score,
-            "line": line
-        })
-
-    del pairs, candidates, logits
-    import gc
-    gc.collect()
+    for line in raw_lines:
+        l_lower = line.lower()
+        score = 0.0
+        if q_lower in l_lower:
+            score += 60.0
+        matched = [t for t in terms if t in l_lower]
+        if terms:
+            score += (len(matched) / len(terms)) * 30.0
+            for t in terms:
+                score += min(l_lower.count(t), 3) * 2.0
+                if re.search(rf'\b{re.escape(t)}\b', l_lower):
+                    score += 10.0
+        if score > 0:
+            ranked.append({"score": round(score, 2), "line": line})
 
     ranked.sort(key=lambda x: x["score"], reverse=True)
     return {"status": "ok", "results": ranked[:top_k]}
 
 def handle_test(query, cwd, top_k=3):
+    import glob
     test_dirs = [d for d in ["tests", "test", "spec"] if os.path.isdir(os.path.join(cwd, d))]
+    for p in glob.glob(os.path.join(cwd, "vendor", "bina", "*", "tests")):
+        if os.path.isdir(p):
+            rel = os.path.relpath(p, cwd)
+            if rel not in test_dirs:
+                test_dirs.append(rel)
+    for p in glob.glob(os.path.join(cwd, "Modules", "*", "tests")):
+        if os.path.isdir(p):
+            rel = os.path.relpath(p, cwd)
+            if rel not in test_dirs:
+                test_dirs.append(rel)
     target = test_dirs if test_dirs else ["."]
-    res = get_candidates(query, cwd, top_k=top_k, search_dirs=target)
+    res = get_candidates(query, cwd, top_k=top_k, search_dirs=target, is_test_search=True)
     return {"status": "ok", "results": res}
 
 def handle_error(error_text, cwd, top_k=3):
@@ -826,34 +772,39 @@ def handle_skill(query, cwd, top_k=3):
         return {"status": "ok", "results": []}
 
     terms = extract_search_terms(query)
-    pairs = [[query, s["text"]] for s in skills]
-    logits = run_cross_encoder_inference(pairs, max_length=256)
+    terms = extract_search_terms(query)
+    q_lower = query.lower().strip()
 
     ranked = []
-    for score, s in zip(logits, skills):
-        boost = 0.0
+    for s in skills:
+        score = 0.0
         name_lower = s["name"].lower()
         desc_lower = s["desc"].lower()
 
+        if q_lower == name_lower:
+            score += 100.0
+        elif q_lower in name_lower:
+            score += 50.0
+
         if terms:
-            if any(t in name_lower for t in terms):
-                boost += 3.0
-            matching_terms = sum(1 for t in terms if t in desc_lower)
-            boost += matching_terms * 0.8
+            n_matched = sum(1 for t in terms if t in name_lower)
+            d_matched = sum(1 for t in terms if t in desc_lower)
+            score += n_matched * 25.0
+            score += d_matched * 5.0
+            if n_matched + d_matched == len(terms):
+                score += 20.0
 
-        ranked.append({
-            "score": score + boost,
-            "name": s["name"],
-            "path": s["path"],
-            "desc": s["desc"]
-        })
-
-    del pairs, skills, logits
-    import gc
-    gc.collect()
+        if score > 0:
+            ranked.append({
+                "score": round(score, 2),
+                "name": s["name"],
+                "path": s["path"],
+                "desc": s["desc"]
+            })
 
     ranked.sort(key=lambda x: x["score"], reverse=True)
     return {"status": "ok", "results": ranked[:top_k]}
+
 
 def handle_client(conn):
     try:
@@ -883,7 +834,7 @@ def handle_client(conn):
         if action == "status":
             resp = {
                 "status": "ok",
-                "backend": "ONNX Runtime" if onnx_session is not None else "PyTorch",
+                "backend": "Pure-AST & Lexical Engine (Zero-Latency)",
                 "rss_mb": get_rss_mb(),
                 "uptime_seconds": round(time.time() - start_time, 1)
             }
@@ -1175,7 +1126,6 @@ def start_daemon_server():
         except OSError:
             pass
 
-    init_model()
 
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.bind(SOCKET_PATH)

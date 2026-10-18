@@ -112,11 +112,55 @@ def find_associated_routes(symbol: str, target_file: Optional[str], cwd: str) ->
         pass
     return routes
 
+def check_target_exists(target: str, symbol: str, target_file: Optional[str], cwd: str) -> bool:
+    if target_file and os.path.isfile(os.path.join(cwd, target_file)):
+        return True
+
+    for ext in (".php", ".vue", ".ts", ".js"):
+        if os.path.isfile(os.path.join(cwd, f"{symbol}{ext}")):
+            return True
+        for d in ("app/Models", "app/Services", "app/Http/Controllers", "resources/js/Pages", "resources/js/Components"):
+            if os.path.isfile(os.path.join(cwd, d, f"{symbol}{ext}")):
+                return True
+
+    decl_regex = rf"\b(class|interface|trait|function|enum)\s+{re.escape(symbol)}\b"
+    search_dirs = [d for d in ("app", "resources", "vendor/bina", "routes", "config") if os.path.isdir(os.path.join(cwd, d))]
+    if not search_dirs:
+        search_dirs = ["."]
+    try:
+        p = subprocess.run(
+            ["rg", "-m", "1", "-e", decl_regex] + search_dirs,
+            cwd=cwd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False
+        )
+        if p.returncode == 0:
+            return True
+    except Exception:
+        pass
+
+    try:
+        p = subprocess.run(
+            ["rg", "-m", "1", "-w", symbol] + search_dirs,
+            cwd=cwd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False
+        )
+        if p.returncode == 0:
+            return True
+    except Exception:
+        pass
+
+    return False
+
 def calculate_impact(target: str, cwd: str = ".") -> Dict[str, Any]:
     """Calculate blast radius and downstream dependencies across PHP and Vue/TS."""
     target_info = resolve_target_info(target, cwd)
     symbol = target_info.get("symbol", target)
     target_file = target_info.get("file")
+
+    if not check_target_exists(target, symbol, target_file, cwd):
+        return {
+            "status": "not_found",
+            "target": target,
+            "message": f"Symbol or file '{target}' not found in codebase (no definition or references detected)."
+        }
 
     # If target is Class::method or Class, locate the file defining the class
     class_name = target_info.get("class") or (symbol if symbol[:1].isupper() else "")

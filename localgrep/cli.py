@@ -342,6 +342,13 @@ def main():
     cmd = args[0]
 
     # Explicit subcommands first
+    if cmd in ("--version", "-v", "version"):
+        if is_json:
+            print(json.dumps({"version": "0.8.0"}))
+        else:
+            print("LocalGrep v0.8.0")
+        return
+
     if cmd == "stop":
         stop_daemon()
         return

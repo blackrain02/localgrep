@@ -268,17 +268,23 @@ def apply_patch(
             "file": rel_path
         }
 
-    # Align indentation of replacement
-    aligned_replacement = align_indentation(norm_replace, matched_file_lines, norm_search)
-
     # Perform replacement in memory
-    prefix_lines = lines[:start_line - 1]
-    suffix_lines = lines[end_line:]
-    replacement_lines = aligned_replacement.split("\n")
-
-    new_file_lines = prefix_lines + replacement_lines + suffix_lines
-    new_content = "\n".join(new_file_lines)
-
+    if match_type == "exact":
+        is_line_start = (char_start == 0 or norm_file[char_start - 1] == "\n")
+        is_line_end = (char_end == len(norm_file) or norm_file[char_end] in ("\n", "\r"))
+        if is_line_start and is_line_end:
+            aligned_replacement = align_indentation(norm_replace, matched_file_lines, norm_search)
+        else:
+            aligned_replacement = norm_replace
+        new_content = norm_file[:char_start] + aligned_replacement + norm_file[char_end:]
+        replacement_lines = aligned_replacement.split("\n")
+    else:
+        aligned_replacement = align_indentation(norm_replace, matched_file_lines, norm_search)
+        prefix_lines = lines[:start_line - 1]
+        suffix_lines = lines[end_line:]
+        replacement_lines = aligned_replacement.split("\n")
+        new_file_lines = prefix_lines + replacement_lines + suffix_lines
+        new_content = "\n".join(new_file_lines)
     # Pre-Flight Syntax Validation
     syntax_valid, syntax_err = validate_content_syntax(abs_path, new_content)
     if not syntax_valid and not force:
@@ -293,15 +299,16 @@ def apply_patch(
         }
 
     # Generate Unified Diff for verification
-    orig_slice = lines[max(0, start_line - 3) : min(len(lines), end_line + 2)]
+    orig_lines_keep = norm_file.splitlines(keepends=True)
+    new_lines_keep = new_content.splitlines(keepends=True)
     diff_gen = list(difflib.unified_diff(
-        matched_file_lines,
-        replacement_lines,
+        orig_lines_keep,
+        new_lines_keep,
         fromfile=f"a/{rel_path}",
         tofile=f"b/{rel_path}",
-        lineterm=""
+        n=3
     ))
-    diff_text = "\n".join(diff_gen)
+    diff_text = "".join(diff_gen).strip()
 
     # Apply to disk atomically if not dry_run
     if not dry_run:

@@ -31,71 +31,90 @@ def extract_script_content(content: str) -> str:
         return "\n".join(m)
     return content
 
+
+
 def parse_vue_reactive_elements(script: str) -> Dict[str, Any]:
-    """Extract props, emits, refs, computed, watchers, and methods from script."""
     props = set()
     emits = set()
     refs = set()
-    computeds: Dict[str, str] = {}  # name -> body
-    watchers: List[Dict[str, Any]] = []  # list of { sources: [], body: "" }
-    methods: Dict[str, str] = {}  # name -> body
+    computeds = {}
+    watchers = []
+    methods = {}
 
     # 1. Props
-    # defineProps<{ prop1: type, prop2: type }>()
-    m_ts_props = re.search(r"defineProps<\s*\{([^}]+)\}\s*>", script, re.DOTALL)
+    m_ts_props = re.search(r"defineProps<\s*\{(.*?)\}\s*>\s*\(\)", script, re.DOTALL)
     if m_ts_props:
-        for p_line in m_ts_props.group(1).split("\n"):
-            p_match = re.match(r"\s*([a-zA-Z0-9_]+)\s*\??\s*:", p_line)
-            if p_match:
-                props.add(p_match.group(1))
-
-    # defineProps(['prop1', 'prop2'])
-    m_arr_props = re.search(r"defineProps\(\s*\[(.*?)\]\s*\)", script, re.DOTALL)
-    if m_arr_props:
-        for p in re.findall(r"['\"]([a-zA-Z0-9_]+)['\"]", m_arr_props.group(1)):
+        for p in re.findall(r"([a-zA-Z0-9_]+)\s*\??\s*:", m_ts_props.group(1)):
             props.add(p)
 
-    # defineProps({ prop1: ..., prop2: ... })
-    m_obj_props = re.search(r"defineProps\(\s*\{", script)
+    m_arr_props = re.search(r"defineProps\(\s*\[(.*?)\]\s*\)", script, re.DOTALL)
+    if m_arr_props:
+        for p in re.findall(r"""['"]([a-zA-Z0-9_]+)['"]""", m_arr_props.group(1)):
+            props.add(p)
+
+    m_obj_props = re.search(r"defineProps\s*\(\s*\{", script)
     if m_obj_props and not m_ts_props and not m_arr_props:
-        start_idx = m_obj_props.end()
-        # Find closing });
-        end_idx = script.find("});", start_idx)
-        if end_idx != -1:
-            prop_block = script[start_idx:end_idx]
-            for p_m in re.finditer(r"^\s*['\"]?([a-zA-Z0-9_]+)['\"]?\s*:\s*(?:\{|[a-zA-Z0-9_\[\]]+)", prop_block, re.MULTILINE):
-                props.add(p_m.group(1))
+        start_idx = m_obj_props.end() - 1
+        depth = 0
+        i = start_idx
+        in_str = None
+        cur_line = []
+        while i < len(script):
+            ch = script[i]
+            if in_str:
+                if ch == in_str and script[i-1] != "\\":
+                    in_str = None
+            elif ch in ('"', "'"):
+                in_str = ch
+            elif ch in ('{', '['):
+                depth += 1
+            elif ch in ('}', ']'):
+                depth -= 1
+                if depth == 0:
+                    break
+            elif depth == 1:
+                cur_line.append(ch)
+            i += 1
+        depth_1_text = "".join(cur_line)
+        for line in depth_1_text.splitlines():
+            pm = re.match(r"""^\s*['"]?([a-zA-Z0-9_]+)['"]?\s*:""", line)
+            if pm:
+                props.add(pm.group(1))
 
     # 2. Emits
-    # defineEmits(['emit1', 'emit2'])
     m_arr_emits = re.search(r"defineEmits\(\s*\[(.*?)\]\s*\)", script, re.DOTALL)
     if m_arr_emits:
-        for e in re.findall(r"['\"]([a-zA-Z0-9_:-]+)['\"]", m_arr_emits.group(1)):
+        for e in re.findall(r"""['"]([a-zA-Z0-9_:-]+)['"]""", m_arr_emits.group(1)):
             emits.add(e)
 
-    # emit('eventName') or $emit('eventName') calls in script
-    for e in re.findall(r"(?:\$emit|emit)\(\s*['\"]([a-zA-Z0-9_:-]+)['\"]", script):
+    for e in re.findall(r"""(?:\\$emit|emit)\(\s*['"]([a-zA-Z0-9_:-]+)['"]""", script):
         emits.add(e)
 
     # 3. Refs / Reactives
-    # const foo = ref(...) or reactive(...)
-    for r_match in re.finditer(r"(?:const|let)\s+([a-zA-Z0-9_]+)\s*=\s*(?:ref|reactive|shallowRef)\s*\(", script):
+    for r_match in re.finditer(r"(?:const|let|var)\s+([a-zA-Z0-9_]+)\s*=\s*(?:ref|reactive|shallowRef)\s*\(", script):
         refs.add(r_match.group(1))
 
-    # 4. Computeds
-    # const myComp = computed(() => { ... }) or computed(() => expr)
-    for c_match in re.finditer(r"(?:const|let)\s+([a-zA-Z0-9_]+)\s*=\s*computed\s*\(\s*(?:\([^)]*\)|[a-zA-Z0-9_]+)?\s*=>\s*(\{.*?\n\s*\}|[^\n;]+)", script, re.DOTALL):
+    # 4. Computeds: support arrow functions, functions, and getter/setter objects
+    for c_match in re.finditer(r"(?:const|let|var)\s+([a-zA-Z0-9_]+)\s*=\s*computed\s*(?:<[^>]+>)?\s*\(", script):
         c_name = c_match.group(1)
-        c_body = c_match.group(2)
-        computeds[c_name] = c_body
+        start = c_match.end()
+        paren_depth = 1
+        i = start
+        while i < len(script):
+            if script[i] == '(':
+                paren_depth += 1
+            elif script[i] == ')':
+                paren_depth -= 1
+                if paren_depth == 0:
+                    break
+            i += 1
+        computeds[c_name] = script[start:i].strip()
 
     # 5. Watchers
-    # watch(source, (val) => { ... }) or watch(() => props.foo, ...) or watch([s1, s2], ...)
     for w_match in re.finditer(r"watch\s*\(\s*([^,]+?)\s*,\s*(?:async\s*)?(?:\([^)]*\)|[a-zA-Z0-9_]+)?\s*=>\s*\{(?P<body>.*?)\n\s*\}\s*\)", script, re.DOTALL):
         w_sources_raw = w_match.group(1).strip()
         w_body = w_match.group("body")
 
-        # Parse source expressions
         sources = []
         if w_sources_raw.startswith("[") and w_sources_raw.endswith("]"):
             sources = [s.strip() for s in w_sources_raw[1:-1].split(",") if s.strip()]
@@ -104,7 +123,6 @@ def parse_vue_reactive_elements(script: str) -> Dict[str, Any]:
 
         clean_sources = []
         for s in sources:
-            # Handle () => props.foo or () => foo.value
             m_fn = re.search(r"=>\s*(?:props\.)?([a-zA-Z0-9_]+)", s)
             if m_fn:
                 clean_sources.append(m_fn.group(1))
@@ -119,11 +137,9 @@ def parse_vue_reactive_elements(script: str) -> Dict[str, Any]:
         })
 
     # 6. Methods / Functions
-    # function myMethod() { ... } or const myMethod = () => { ... }
-    for fn_match in re.finditer(r"(?:function\s+([a-zA-Z0-9_]+)\s*\([^\)]*\)|(?:const|let)\s+([a-zA-Z0-9_]+)\s*=\s*(?:async\s*)?\([^\)]*\)\s*=>)\s*\{", script):
+    for fn_match in re.finditer(r"(?:function\s+([a-zA-Z0-9_]+)\s*\([^\)]*\)|(?:const|let|var)\s+([a-zA-Z0-9_]+)\s*=\s*(?:async\s*)?\([^\)]*\)\s*=>)\s*\{", script):
         name = fn_match.group(1) or fn_match.group(2)
         if name and name not in refs and name not in computeds:
-            # find rough body
             start = fn_match.end()
             methods[name] = script[start:start+300]
 
@@ -137,7 +153,6 @@ def parse_vue_reactive_elements(script: str) -> Dict[str, Any]:
     }
 
 def build_reactive_dag(elements: Dict[str, Any]) -> List[List[str]]:
-    """Build directed causal flow chains: prop/ref -> computed -> watch -> emit/method."""
     props = set(elements["props"])
     refs = set(elements["refs"])
     computeds = elements["computeds"]
@@ -156,14 +171,17 @@ def build_reactive_dag(elements: Dict[str, Any]) -> List[List[str]]:
             if src != c_name and re.search(rf"\b(?:props\.)?{re.escape(src)}\b", c_body):
                 comp_deps[c_name].add(src)
 
+        # Writable computed setter emitting events
+        c_emits = [e for e in emits if re.search(rf"""emit\(\s*['"]{re.escape(e)}['"]""", c_body)]
+        for e in c_emits:
+            chains.append([f"[computed: {c_name}]", f"[emit: {e}]"])
+
     # Map watcher flows
-    # source -> watch -> emit/method/ref
     for idx, w in enumerate(watchers):
         w_sources = w["sources"]
         w_body = w["body"]
 
-        # find what watch modifies or emits
-        w_emits = [e for e in emits if re.search(rf"emit\(\s*['\"]{re.escape(e)}['\"]", w_body)]
+        w_emits = [e for e in emits if re.search(rf"""emit\(\s*['"]{re.escape(e)}['"]""", w_body)]
         w_methods = [m for m in methods if re.search(rf"\b{re.escape(m)}\s*\(", w_body)]
         w_refs_mod = [r for r in refs if re.search(rf"\b{re.escape(r)}\.value\s*=", w_body)]
 
@@ -188,7 +206,7 @@ def build_reactive_dag(elements: Dict[str, Any]) -> List[List[str]]:
 
     # Map methods triggering emits
     for m_name, m_body in methods.items():
-        m_emits = [e for e in emits if re.search(rf"emit\(\s*['\"]{re.escape(e)}['\"]", m_body)]
+        m_emits = [e for e in emits if re.search(rf"""emit\(\s*['"]{re.escape(e)}['"]""", m_body)]
         for e in m_emits:
             chains.append([f"[method: {m_name}]", f"[emit: {e}]"])
 
