@@ -89,7 +89,8 @@ def extract_diff_context(cwd: str, staged: bool = False, target_file: Optional[s
                     i += 1
 
                 # Resolve enclosing symbol
-                enclosing = raw_func_header if raw_func_header else get_enclosing_symbol(current_file, new_start, cwd)
+                ast_symbol = get_enclosing_symbol(current_file, new_start, cwd)
+                enclosing = ast_symbol if ast_symbol else (raw_func_header or "file scope")
 
                 current_hunks.append({
                     "line": new_start,

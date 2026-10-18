@@ -26,15 +26,18 @@ def inspect_model_factory(model_name: str, cwd: str = ".") -> Dict[str, Any]:
         # Search for any factory containing model name
         all_factories = glob.glob(os.path.join(cwd, "database", "factories", "**", "*Factory.php"), recursive=True) + \
                         glob.glob(os.path.join(cwd, "vendor", "bina", "*", "database", "factories", "**", "*Factory.php"), recursive=True)
-        suggestions = []
-        for f in all_factories:
-            base = os.path.basename(f).replace("Factory.php", "")
-            if clean_model.lower() in base.lower():
-                suggestions.append(base)
+        all_bases = [os.path.basename(f).replace("Factory.php", "") for f in all_factories]
+        suggestions = [b for b in all_bases if clean_model.lower() in b.lower()]
+        import difflib
+        fuzzy_matches = difflib.get_close_matches(clean_model, all_bases, n=5, cutoff=0.4)
+        for fm in fuzzy_matches:
+            if fm not in suggestions:
+                suggestions.append(fm)
 
         return {
             "status": "error",
             "message": f"Factory for model '{clean_model}' not found.",
+            "suggestions": suggestions[:5],
             "available_suggestions": suggestions[:5]
         }
 

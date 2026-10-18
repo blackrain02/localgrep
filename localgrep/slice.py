@@ -43,31 +43,62 @@ def find_target_in_methods(methods: List[Dict[str, Any]], target: str) -> Option
 def parse_php_methods(lines: List[str]) -> List[Dict[str, Any]]:
     parser = get_ast_parser("php")
     methods = []
-    if not parser:
-        return methods
+    if parser:
+        content = "".join(lines).encode("utf-8", errors="ignore")
+        try:
+            tree = parser.parse(content)
+            def walk(node):
+                if node.type in ("method_declaration", "function_declaration"):
+                    s_row = node.start_point[0]
+                    e_row = node.end_point[0]
+                    name_node = node.child_by_field_name("name")
+                    name = name_node.text.decode("utf-8", errors="ignore") if name_node else ""
+                    methods.append({
+                        "start": s_row + 1,
+                        "end": e_row + 1,
+                        "name": name,
+                        "type": node.type
+                    })
+                for child in node.children:
+                    walk(child)
 
-    content = "".join(lines).encode("utf-8", errors="ignore")
-    try:
-        tree = parser.parse(content)
-    except Exception:
-        return methods
+            walk(tree.root_node)
+            if methods:
+                return methods
+        except Exception:
+            pass
 
-    def walk(node):
-        if node.type in ("method_declaration", "function_declaration"):
-            s_row = node.start_point[0]
-            e_row = node.end_point[0]
-            name_node = node.child_by_field_name("name")
-            name = name_node.text.decode("utf-8", errors="ignore") if name_node else ""
-            methods.append({
-                "start": s_row + 1,
-                "end": e_row + 1,
-                "name": name,
-                "type": node.type
-            })
-        for child in node.children:
-            walk(child)
+    # Lexical fallback when tree_sitter is unavailable
+    in_method = False
+    cur_method = None
+    brace_depth = 0
+    method_start_depth = 0
+    fn_pattern = re.compile(r'^\s*(?:(?:public|protected|private|static|final|abstract)\s+)*function\s+([a-zA-Z0-9_]+)\s*\(')
 
-    walk(tree.root_node)
+    for idx, line in enumerate(lines, start=1):
+        if not in_method:
+            m = fn_pattern.search(line)
+            if m:
+                cur_method = {
+                    "start": idx,
+                    "name": m.group(1),
+                    "type": "method_declaration",
+                    "end": idx
+                }
+                in_method = True
+                method_start_depth = brace_depth
+        if in_method:
+            open_b = line.count("{")
+            close_b = line.count("}")
+            brace_depth += (open_b - close_b)
+            if ("{" in line or cur_method["start"] < idx) and brace_depth <= method_start_depth:
+                cur_method["end"] = idx
+                methods.append(cur_method)
+                in_method = False
+                cur_method = None
+        else:
+            brace_depth += (line.count("{") - line.count("}"))
+
     return methods
 
 def parse_py_methods(lines: List[str]) -> List[Dict[str, Any]]:

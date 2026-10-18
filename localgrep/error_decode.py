@@ -189,7 +189,15 @@ def extract_last_error_block(text: str) -> str:
 
 def decode_error(raw_input: str, cwd: str = ".") -> Dict[str, Any]:
     """Parse log text or exception trace into structured, high-density summary."""
-    clean_input = raw_input.strip()
+    clean_input = raw_input.strip().strip("'\"")
+    if clean_input.startswith("--file="):
+        clean_input = clean_input[7:].strip().strip("'\"")
+    elif clean_input.startswith("--file "):
+        clean_input = clean_input[7:].strip().strip("'\"")
+    elif clean_input.startswith("-f="):
+        clean_input = clean_input[3:].strip().strip("'\"")
+    elif clean_input.startswith("-f "):
+        clean_input = clean_input[3:].strip().strip("'\"")
 
     # 1. Resolve log aliases or empty input to actual log file
     target_file = None
@@ -213,11 +221,20 @@ def decode_error(raw_input: str, cwd: str = ".") -> Dict[str, Any]:
                 "message": f"Log file not found at '{default_log}'. Ensure Laravel log exists or specify error text directly."
             }
     else:
-        # Check if clean_input points to an existing file
+        # Check if clean_input points to an existing file or is log content
+        looks_like_log_content = (
+            "\n" in clean_input or
+            bool(re.search(r'\[\d{4}-\d{2}-\d{2}', clean_input)) or
+            bool(re.search(r'\.(?:ERROR|CRITICAL|EMERGENCY|ALERT|WARNING):', clean_input)) or
+            clean_input.startswith(("{", "[")) or
+            "{" in clean_input or
+            "Exception:" in clean_input or
+            "Error:" in clean_input
+        )
         cand_path = os.path.join(cwd, clean_input) if not os.path.isabs(clean_input) else clean_input
         if os.path.isfile(cand_path):
             target_file = cand_path
-        elif clean_input.endswith(".log") or clean_input.startswith("storage/"):
+        elif not looks_like_log_content and (clean_input.endswith((".log", ".txt", ".out")) or (("/" in clean_input or "\\" in clean_input) and " " not in clean_input)):
             return {
                 "status": "error",
                 "message": f"Specified log file not found: '{clean_input}'"
@@ -226,6 +243,11 @@ def decode_error(raw_input: str, cwd: str = ".") -> Dict[str, Any]:
     # 2. Read file or use input directly
     if target_file:
         try:
+            if os.path.getsize(target_file) == 0:
+                return {
+                    "status": "error",
+                    "message": f"Log file is empty: '{target_file}'"
+                }
             with open(target_file, "r", encoding="utf-8", errors="ignore") as f:
                 f.seek(0, os.SEEK_END)
                 size = f.tell()
@@ -246,13 +268,18 @@ def decode_error(raw_input: str, cwd: str = ".") -> Dict[str, Any]:
     has_error_structure = (
         bool(re.search(r'\b[A-Za-z0-9_\\]*(?:Exception|Error)\b', text_to_parse)) or
         bool(re.search(r'\.(?:php|vue|ts|js|py)(?::\d+|\s+on\s+line\s+\d+|\(\d+\))', text_to_parse, re.I)) or
-        bool(re.search(r'#\d+\s+|(?:Stack trace:|\[stacktrace\]|\bthrown in\b)', text_to_parse, re.I)) or
+        bool(re.search(r'#\d+\s+|(?:Stack trace:|\[stacktrace\]|\bthrown in\b|Traceback \(most recent call last\):)', text_to_parse, re.I)) or
         bool(re.search(r'\.(?:ERROR|CRITICAL|EMERGENCY|ALERT|WARNING):\s*', text_to_parse)) or
         bool(re.search(r'\b(Fatal error|Uncaught|Undefined property|Undefined variable|Undefined index|Undefined constant|Undefined array key|Call to undefined|syntax error|Parse error|SQLSTATE|QueryException)\b', text_to_parse, re.I)) or
         bool(re.search(r'\[object\]\s*\([A-Za-z0-9_\\]+', text_to_parse))
     )
 
     if not has_error_structure:
+        if target_file:
+            return {
+                "status": "error",
+                "message": f"No error or exception entries detected in log file: '{target_file}'"
+            }
         clean_preview = clean_input.replace("\n", " ")[:60]
         return {
             "status": "error",
@@ -298,6 +325,15 @@ def decode_error(raw_input: str, cwd: str = ".") -> Dict[str, Any]:
     error_type = "Exception"
     error_message = ""
 
+    # Check for standard Laravel log level prefix (e.g. local.ERROR: Message)
+    m_log = re.search(r'(?:\[\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}\]\s+)?(?:[a-zA-Z0-9_\-]+\.)?(?:ERROR|CRITICAL|EMERGENCY|ALERT):\s*([^\{\n]+)', text_to_parse)
+    log_prefix_msg = None
+    if m_log and m_log.group(1).strip():
+        log_prefix_msg = m_log.group(1).strip()
+        m_cls_prefix = re.match(r'^[A-Za-z0-9_\\]+(?:Exception|Error):\s*(.*)', log_prefix_msg)
+        if m_cls_prefix:
+            log_prefix_msg = m_cls_prefix.group(1).strip()
+
     # Check JSON structured exception / message
     m_json_msg = re.search(r'["\']message["\']\s*:\s*["\']([^"\']+)["\']', text_to_parse)
     m_json_class = re.search(r'["\']class["\']\s*:\s*["\']([^"\']+)["\']', text_to_parse)
@@ -306,10 +342,19 @@ def decode_error(raw_input: str, cwd: str = ".") -> Dict[str, Any]:
 
     if m_json_obj:
         error_type = m_json_obj.group(1).split("\\")[-1]
-        if m_json_obj.group(2).strip():
-            error_message = m_json_obj.group(2).strip()
+        cand = m_json_obj.group(2).strip()
+        if log_prefix_msg and len(log_prefix_msg) > len(cand) and (cand in log_prefix_msg or cand.lower() in ("exception", "error")):
+            error_message = log_prefix_msg
+        elif cand:
+            error_message = cand
+        elif log_prefix_msg:
+            error_message = log_prefix_msg
     elif m_json_msg and m_json_msg.group(1).strip():
-        error_message = m_json_msg.group(1).strip()
+        cand = m_json_msg.group(1).strip()
+        if log_prefix_msg and len(log_prefix_msg) > len(cand) and cand in log_prefix_msg:
+            error_message = log_prefix_msg
+        else:
+            error_message = cand
 
     # PHP Fatal error / Uncaught Error
     if not error_message:
@@ -327,11 +372,8 @@ def decode_error(raw_input: str, cwd: str = ".") -> Dict[str, Any]:
             if m_std.group(2).strip():
                 error_message = m_std.group(2).strip()
 
-    # Standard Laravel log level prefix (e.g. local.ERROR: Message)
-    if not error_message:
-        m_log = re.search(r'(?:\[\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}\]\s+)?(?:[a-zA-Z0-9_\-]+\.)?(?:ERROR|CRITICAL|EMERGENCY|ALERT):\s*([^\{\n]+)', text_to_parse)
-        if m_log and m_log.group(1).strip():
-            error_message = m_log.group(1).strip()
+    if not error_message and log_prefix_msg:
+        error_message = log_prefix_msg
 
     # PHP Error phrases (e.g. Undefined property: ...)
     if not error_message:
@@ -371,8 +413,10 @@ def decode_error(raw_input: str, cwd: str = ".") -> Dict[str, Any]:
         elif "SQLSTATE" in error_message or "QueryException" in error_message:
             error_type = "QueryException"
 
-    if not error_message or error_message.lower() in ("at", "in"):
-        if raw_file:
+    if not error_message or error_message.lower() in ("at", "in", "exception", "error"):
+        if log_prefix_msg and log_prefix_msg.lower() not in ("at", "in", "exception", "error"):
+            error_message = log_prefix_msg
+        elif raw_file:
             error_message = f"{error_type} in {os.path.basename(raw_file)}:{raw_line}"
         else:
             clean_preview = clean_input.replace("\n", " ")[:60]
@@ -400,35 +444,63 @@ def decode_error(raw_input: str, cwd: str = ".") -> Dict[str, Any]:
 
     # 7. Parse Stack Frames
     frames = []
-    frame_matches = re.finditer(r'#(\d+)\s+([^\(\n]+)\((\d+)\):?\s*(.*)', text_to_parse)
-    for fm in frame_matches:
-        f_idx = int(fm.group(1))
-        f_path = fm.group(2).strip()
-        f_line = int(fm.group(3))
-        f_call = fm.group(4).strip()
-        resolved = resolve_error_filepath(f_path, cwd)
-        rel_f = os.path.relpath(resolved, cwd) if os.path.isfile(resolved) else f_path
-        frames.append({
-            "index": f_idx,
-            "path": resolved,
-            "line": f_line,
-            "call": f_call,
-            "is_app": is_application_frame(rel_f),
-            "rel_path": rel_f
-        })
+    # PHP stack traces: #0 /path/file.php(123): call() OR #0 /path/file.php:123
+    frame_matches = list(re.finditer(r'#(\d+)\s+([^\(\n:]+)(?:\((\d+)\)|:(\d+))?:?\s*(.*)', text_to_parse))
+    is_python_traceback = False
+    if frame_matches:
+        for fm in frame_matches:
+            f_idx = int(fm.group(1))
+            f_path = fm.group(2).strip()
+            f_line = int(fm.group(3) or fm.group(4) or 1)
+            f_call = fm.group(5).strip() if fm.group(5) else ""
+            resolved = resolve_error_filepath(f_path, cwd)
+            rel_f = os.path.relpath(resolved, cwd) if os.path.isfile(resolved) else f_path
+            frames.append({
+                "index": f_idx,
+                "path": resolved,
+                "line": f_line,
+                "call": f_call,
+                "is_app": is_application_frame(rel_f),
+                "rel_path": rel_f
+            })
+    else:
+        # Check Python traceback: File "...", line 123, in foo
+        py_matches = list(re.finditer(r'File\s+["\']([^"\']+)["\'],\s+line\s+(\d+)(?:,\s*in\s+([^\n]+))?', text_to_parse))
+        if py_matches:
+            is_python_traceback = True
+            for idx, py_m in enumerate(py_matches):
+                f_path = py_m.group(1).strip()
+                f_line = int(py_m.group(2))
+                f_call = py_m.group(3).strip() if py_m.group(3) else ""
+                resolved = resolve_error_filepath(f_path, cwd)
+                rel_f = os.path.relpath(resolved, cwd) if os.path.isfile(resolved) else f_path
+                frames.append({
+                    "index": idx,
+                    "path": resolved,
+                    "line": f_line,
+                    "call": f_call,
+                    "is_app": is_application_frame(rel_f),
+                    "rel_path": rel_f
+                })
 
     # Select innermost application frame: prioritize explicit app frame
     app_frames = [f for f in frames if f["is_app"]]
     innermost_app_frame = None
 
-    if inline_app_frame and inline_app_frame["is_app"]:
-        innermost_app_frame = inline_app_frame
-    elif app_frames:
-        innermost_app_frame = app_frames[0]
-    elif inline_app_frame:
-        innermost_app_frame = inline_app_frame
-    elif frames:
-        innermost_app_frame = frames[0]
+    if is_python_traceback:
+        if app_frames:
+            innermost_app_frame = app_frames[-1]
+        elif frames:
+            innermost_app_frame = frames[-1]
+    else:
+        if inline_app_frame and inline_app_frame["is_app"]:
+            innermost_app_frame = inline_app_frame
+        elif app_frames:
+            innermost_app_frame = app_frames[0]
+        elif inline_app_frame:
+            innermost_app_frame = inline_app_frame
+        elif frames:
+            innermost_app_frame = frames[0]
 
     # Extract code snippet for innermost frame
     if innermost_app_frame:
@@ -494,6 +566,9 @@ def format_error_decode_text(res: Dict[str, Any]) -> str:
     tot = res.get("total_frames_count", 0)
     app_cnt = res.get("app_frames_count", 0)
     lines.append("")
-    lines.append(f"Stack Trace Distillation: Pruned {max(0, tot - app_cnt)} framework vendor frames ({app_cnt} app frames preserved).")
+    if tot > 0:
+        lines.append(f"Stack Trace Distillation: Pruned {max(0, tot - app_cnt)} framework vendor frames ({app_cnt} app frames preserved).")
+    else:
+        lines.append("Stack Trace Distillation: Single-line log entry without full stack trace.")
 
     return "\n".join(lines)

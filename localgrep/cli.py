@@ -534,7 +534,13 @@ def main():
         raw_args = [a for a in args[1:] if a != "--json"]
         raw_input = ""
         if not sys.stdin.isatty():
-            raw_input = sys.stdin.read()
+            stdin_data = sys.stdin.read()
+            if stdin_data.strip():
+                raw_input = stdin_data
+            elif raw_args:
+                raw_input = " ".join(raw_args)
+            else:
+                raw_input = "log"
         elif raw_args:
             raw_input = " ".join(raw_args)
         else:

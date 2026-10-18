@@ -11,6 +11,12 @@ from localgrep.env_audit import audit_environment, format_env_audit_text
 from localgrep.state_map import generate_state_map, format_state_map_text
 from localgrep.api_shape import synthesize_api_shape, format_api_shape_text
 
+try:
+    import tree_sitter_languages
+    HAS_TREE_SITTER = True
+except ImportError:
+    HAS_TREE_SITTER = False
+
 class TestLocalGrepImprovements(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -129,6 +135,7 @@ const isBundle = computed(() => props.model?.type === 'bundle');
         self.assertEqual(end_l, 2)
         self.assertIn("isVideoLastIndex", text)
 
+    @unittest.skipUnless(HAS_TREE_SITTER, "tree_sitter_languages required for Vue AST chunking")
     def test_vue_single_line_declaration_chunks(self):
         from localgrep.chunker import chunk_vue_file
         lines = [
